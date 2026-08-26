@@ -1,6 +1,5 @@
 mod commands;
 mod country;
-mod data_migration;
 mod export;
 mod import;
 mod inventory;
@@ -24,8 +23,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            data_migration::migrate(&data_dir)?;
             let store = import::open_store(app.handle())?;
             let inventory = import::open_inventory(app.handle())?;
             let last = commands::open_last_target(app.handle())?;
