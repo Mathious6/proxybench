@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::parse::{self, ProxyLine};
@@ -202,6 +202,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = fs::OpenOptions::new()
             .write(true)

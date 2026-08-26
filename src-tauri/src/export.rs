@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use crate::session::StoredBucket;
@@ -78,6 +77,7 @@ fn io_error(path: &Path, err: std::io::Error) -> String {
 fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = fs::OpenOptions::new()
             .write(true)
