@@ -55,7 +55,8 @@ On Windows, run the setup wizard. If SmartScreen appears, choose **More
 info**, then **Run anyway**. Windows needs WebView2; Windows 10 and 11
 usually already have it.
 
-Builds are unsigned until signing certificates are configured.
+macOS builds use ad-hoc signing and are not notarized. Windows installers are
+unsigned.
 
 ## Use
 
