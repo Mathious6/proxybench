@@ -58,6 +58,10 @@ usually already have it.
 macOS builds use ad-hoc signing and are not notarized. Windows installers are
 unsigned.
 
+From the first updater-enabled release onward, use **Check for updates** in the
+bottom bar to download and install newer versions. Existing `0.2.x` installs
+need one final manual download before in-app updates become available.
+
 ## Use
 
 1. Drop a `.txt` file or a folder of `.txt` files onto the window, or click

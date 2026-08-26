@@ -8,6 +8,7 @@
   import type { ImportResult, Progress, RunResult, SubnetRow } from "$lib/import";
   import { emptyMetrics, withMetrics } from "$lib/import";
   import SubnetTable from "$lib/SubnetTable.svelte";
+  import UpdateControl from "$lib/UpdateControl.svelte";
 
   let rows = $state<SubnetRow[]>([]);
   let hovering = $state(false);
@@ -28,6 +29,7 @@
   let probeCidr = $state<string | null>(null);
   let pageReset = $state(0);
   let version = $state("");
+  let updating = $state(false);
   let paging = $state({
     label: "0 of 0",
     canPrevious: false,
@@ -37,7 +39,7 @@
   });
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const locked = $derived(busy || running);
+  const locked = $derived(busy || running || updating);
 
   function showNotice(message: string, isError: boolean) {
     if (noticeTimer) {
@@ -509,6 +511,11 @@
   {/if}
   <footer class="flex h-12 shrink-0 items-center gap-4 border-t border-line px-5">
     <span class="w-14 shrink-0 text-xs tabular-nums text-faint">{version ? `v${version}` : ""}</span>
+    <UpdateControl
+      disabled={busy || running}
+      onBusyChange={(value) => (updating = value)}
+      onNotice={showNotice}
+    />
     <div class="min-w-0 flex-1">
       {#if running && total > 0}
         <div class="flex min-w-0 items-center gap-3">

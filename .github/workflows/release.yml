@@ -7,10 +7,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - os: macos-15
@@ -44,17 +49,31 @@ jobs:
           git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
+      - name: verify updater signing configuration
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+
       - name: build ad-hoc signed macOS release
         if: startsWith(matrix.os, 'macos')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: "-"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         with:
           tagName: v__VERSION__
           releaseName: proxybench v__VERSION__
           releaseBody: Preview builds made without certificates yet. macOS DMGs need right-click Open on first launch. The Windows NSIS setup wizard may trigger SmartScreen; choose More info, then Run anyway.
-          releaseDraft: false
+          releaseDraft: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
           tauriScript: bun run tauri
           args: ${{ matrix.args }}
 
@@ -63,10 +82,45 @@ jobs:
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: proxybench v__VERSION__
           releaseBody: Preview builds made without certificates yet. macOS DMGs need right-click Open on first launch. The Windows NSIS setup wizard may trigger SmartScreen; choose More info, then Run anyway.
-          releaseDraft: false
+          releaseDraft: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
           tauriScript: bun run tauri
           args: ${{ matrix.args }}
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: validate updater release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          test -n "$RELEASE_ID"
+          export RELEASE_ID
+          sh scripts/validate-release.sh
+
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          test -n "$RELEASE_ID"
+          gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" -F draft=false
