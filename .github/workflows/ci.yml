@@ -32,3 +32,13 @@ jobs:
       - run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          cache-workspaces: src-tauri -> target
+      - run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml

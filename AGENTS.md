@@ -119,5 +119,5 @@ to the same `X.Y.Z`, merge to `main`, then tag `vX.Y.Z`.
 
 GitHub Actions (`.github/workflows/ci.yml` on `main` and pull requests,
 `.github/workflows/release.yml` on `vX.Y.Z`) builds macOS DMGs for Apple
-Silicon and Intel and a Windows NSIS setup wizard. Apple signing runs only
-when those secrets exist; otherwise the installers stay unsigned.
+Silicon and Intel and a Windows NSIS setup wizard. macOS uses ad-hoc signing;
+Windows installers are unsigned.
