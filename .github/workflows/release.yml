@@ -56,7 +56,6 @@ jobs:
           releaseBody: Preview builds made without certificates yet. macOS DMGs need right-click Open on first launch. The Windows NSIS setup wizard may trigger SmartScreen; choose More info, then Run anyway.
           releaseDraft: false
           tauriScript: bun run tauri
-          retryAttempts: 3
           args: ${{ matrix.args }}
 
       - name: build Windows release
@@ -70,5 +69,4 @@ jobs:
           releaseBody: Preview builds made without certificates yet. macOS DMGs need right-click Open on first launch. The Windows NSIS setup wizard may trigger SmartScreen; choose More info, then Run anyway.
           releaseDraft: false
           tauriScript: bun run tauri
-          retryAttempts: 3
           args: ${{ matrix.args }}
