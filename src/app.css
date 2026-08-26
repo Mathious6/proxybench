@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #131010;
+  --color-raised: #1a1616;
+  --color-line: #2a2424;
+  --color-text: #f1ecec;
+  --color-muted: #b7b1b1;
+  --color-faint: #7c7575;
+  --color-accent: #89b5ff;
+  --color-good: #8ec07c;
+  --color-bad: #e0866b;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+table {
+  border-collapse: collapse;
+}
+
+.chip-strip {
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+}
+
+.chip-strip::-webkit-scrollbar {
+  display: none;
+}
