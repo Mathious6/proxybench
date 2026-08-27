@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 .DS_Store
+.agents
 node_modules
 /build
 /.svelte-kit
