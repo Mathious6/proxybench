@@ -16,15 +16,22 @@
   let installing = $state(false);
   let update = $state<Update | null>(null);
   let progress = $state<UpdateProgress>({ downloaded: 0, total: null });
+  let announcement = $state("");
 
-  const progressLabel = $derived.by(() => {
-    if (!installing) {
-      return "";
+  const label = $derived.by(() => {
+    if (checking) {
+      return "Checking for updates…";
     }
-    if (!progress.total) {
-      return "Updating…";
+    if (installing) {
+      if (!progress.total) {
+        return "Installing update…";
+      }
+      return `Installing update, ${Math.min(100, Math.round((progress.downloaded / progress.total) * 100))}%`;
     }
-    return `Updating ${Math.min(100, Math.round((progress.downloaded / progress.total) * 100))}%`;
+    if (update) {
+      return `Install v${update.version}`;
+    }
+    return "Check for updates";
   });
 
   async function findUpdate() {
@@ -34,13 +41,19 @@
     checking = true;
     onBusyChange(true);
     onNotice("", false);
+    announcement = "Checking for updates";
     try {
       update = await checkForUpdate();
       if (!update) {
         onNotice("Up to date", false);
+        announcement = "Up to date";
+      } else {
+        onNotice(`Version ${update.version} available`, false);
+        announcement = `Version ${update.version} available`;
       }
     } catch {
       onNotice("Update check failed", true);
+      announcement = "Update check failed";
     } finally {
       checking = false;
       onBusyChange(false);
@@ -54,36 +67,44 @@
     installing = true;
     onBusyChange(true);
     onNotice("", false);
+    announcement = `Installing version ${update.version}`;
     try {
       await installUpdate(update, (next) => {
         progress = next;
+        if (next.total) {
+          onNotice(
+            `Updating ${Math.min(100, Math.round((next.downloaded / next.total) * 100))}%`,
+            false,
+          );
+        } else {
+          onNotice("Updating…", false);
+        }
       });
     } catch {
       onNotice("Update failed. Try again.", true);
+      announcement = "Update failed. Try again.";
       installing = false;
       onBusyChange(false);
     }
   }
 </script>
 
-{#if update && !installing}
-  <button
-    type="button"
-    class="h-7 shrink-0 rounded-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-    disabled={disabled || checking}
-    onclick={applyUpdate}
-  >
-    Update to v{update.version}
-  </button>
-{:else if installing}
-  <span class="shrink-0 text-xs tabular-nums text-muted">{progressLabel}</span>
-{:else}
-  <button
-    type="button"
-    class="h-7 shrink-0 rounded-md border border-line px-3 text-xs text-faint hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-    disabled={disabled || checking}
-    onclick={findUpdate}
-  >
-    {checking ? "Checking…" : "Check for updates"}
-  </button>
-{/if}
+<button
+  type="button"
+  class="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm {update
+    ? 'text-accent'
+    : 'text-faint hover:text-text'} focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+  disabled={disabled || checking || installing}
+  aria-label={label}
+  aria-busy={checking || installing}
+  title={label}
+  onclick={() => (update ? applyUpdate() : findUpdate())}
+>
+  <span class={checking || installing ? "animate-spin" : ""} aria-hidden="true">
+    {update && !installing ? "↓" : "↻"}
+  </span>
+  {#if update && !installing}
+    <span class="absolute right-0 top-0 h-1 w-1 rounded-full bg-accent" aria-hidden="true"></span>
+  {/if}
+</button>
+<span class="sr-only" role="status" aria-live="polite">{announcement}</span>

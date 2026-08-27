@@ -7,6 +7,10 @@
     "core:default",
     "dialog:default",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/Mathious6/proxybench" }]
+    }
   ]
 }

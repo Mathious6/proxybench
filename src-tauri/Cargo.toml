@@ -31,6 +31,7 @@ webpki-roots = "1"
 rustls-pki-types = "1"
 tauri-plugin-updater = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "71df1a095d007fb94f0eb07940b0a78e57ac984e", version = "2.10.1" }
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 
 [dev-dependencies]
 rcgen = "0.13"
