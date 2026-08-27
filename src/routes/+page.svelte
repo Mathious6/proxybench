@@ -3,11 +3,13 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
   import type { ImportResult, Progress, RunResult, SubnetRow } from "$lib/import";
   import { emptyMetrics, withMetrics } from "$lib/import";
   import SubnetTable from "$lib/SubnetTable.svelte";
+  import UpdateControl from "$lib/UpdateControl.svelte";
 
   let rows = $state<SubnetRow[]>([]);
   let hovering = $state(false);
@@ -28,6 +30,7 @@
   let probeCidr = $state<string | null>(null);
   let pageReset = $state(0);
   let version = $state("");
+  let updating = $state(false);
   let paging = $state({
     label: "0 of 0",
     canPrevious: false,
@@ -37,7 +40,7 @@
   });
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const locked = $derived(busy || running);
+  const locked = $derived(busy || running || updating);
 
   function showNotice(message: string, isError: boolean) {
     if (noticeTimer) {
@@ -366,6 +369,14 @@
     const minutes = Math.round(seconds / 60);
     return ` · ~${minutes}m left`;
   }
+
+  async function openRepository() {
+    try {
+      await openUrl("https://github.com/Mathious6/proxybench");
+    } catch {
+      showNotice("Could not open GitHub", true);
+    }
+  }
 </script>
 
 <main class="relative flex h-full min-h-0 flex-col overflow-hidden bg-bg text-text">
@@ -507,9 +518,27 @@
       />
     </div>
   {/if}
-  <footer class="flex h-12 shrink-0 items-center gap-4 border-t border-line px-5">
-    <span class="w-14 shrink-0 text-xs tabular-nums text-faint">{version ? `v${version}` : ""}</span>
-    <div class="min-w-0 flex-1">
+  <footer class="flex h-12 shrink-0 items-center border-t border-line px-5">
+    <div class="flex shrink-0 items-center gap-1.5 pr-3">
+      {#if version}
+        <button
+          type="button"
+          class="rounded-sm text-xs tabular-nums text-faint hover:text-text hover:underline hover:decoration-dotted hover:underline-offset-2 focus:outline-none focus:ring-1 focus:ring-accent"
+          aria-label={`proxybench v${version} — open repository on GitHub`}
+          title="https://github.com/Mathious6/proxybench"
+          onclick={openRepository}
+        >
+          v{version}
+        </button>
+      {/if}
+      <UpdateControl
+        disabled={busy || running}
+        onBusyChange={(value) => (updating = value)}
+        onNotice={showNotice}
+      />
+    </div>
+    <span class="h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
+    <div class="min-w-0 flex-1 px-3">
       {#if running && total > 0}
         <div class="flex min-w-0 items-center gap-3">
           <div class="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-raised">
@@ -532,7 +561,8 @@
       {/if}
     </div>
     {#if rows.length > 0}
-      <div class="flex shrink-0 items-center gap-2">
+      <span class="h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
+      <div class="flex shrink-0 items-center gap-2 pl-3">
         <span class="min-w-[112px] text-right text-xs tabular-nums text-faint">{paging.label}</span>
         <button
           type="button"

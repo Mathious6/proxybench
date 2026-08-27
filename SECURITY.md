@@ -13,3 +13,7 @@ without real proxy credentials.
 
 Please allow a reasonable amount of time for investigation before public
 disclosure.
+
+Application updates are signed and verified independently from operating
+system code signing. Report suspected update or release-key compromise through
+GitHub's private vulnerability reporting.

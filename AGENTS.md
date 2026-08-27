@@ -121,3 +121,8 @@ GitHub Actions (`.github/workflows/ci.yml` on `main` and pull requests,
 `.github/workflows/release.yml` on `vX.Y.Z`) builds macOS DMGs for Apple
 Silicon and Intel and a Windows NSIS setup wizard. macOS uses ad-hoc signing;
 Windows installers are unsigned.
+
+Updater releases require `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The workflow keeps releases as drafts
+until `latest.json` contains macOS arm64, macOS x64, and Windows x64. Never
+replace published assets; ship a higher patch version.
