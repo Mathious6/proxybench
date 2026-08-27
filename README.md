@@ -49,8 +49,7 @@ You do not need Git, GitHub, or a developer setup.
 | Windows 10 or 11                        | Windows **x64** setup `.exe` |
 
 On a Mac, open the DMG, drag **proxybench** into Applications, then open it
-normally. Starting with v0.3.2, macOS builds are Developer ID signed and
-notarized by Apple.
+normally. MacOS builds are Developer ID signed and notarized by Apple.
 
 On Windows, run the setup wizard. If SmartScreen appears, choose **More
 info**, then **Run anyway**. Windows needs WebView2; Windows 10 and 11
