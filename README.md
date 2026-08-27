@@ -42,11 +42,11 @@ You do not need Git, GitHub, or a developer setup.
 1. Open the [latest release](https://github.com/Mathious6/proxybench/releases/latest).
 2. Download the file for your computer.
 
-| Your computer                           | File to download                         |
-| --------------------------------------- | ---------------------------------------- |
-| Mac with Apple Silicon (M1, M2, M3, M4) | macOS **arm64** `.dmg`                   |
-| Mac with Intel                          | macOS **x64** `.dmg`                      |
-| Windows 10 or 11                        | Windows **x64** setup `.exe`             |
+| Your computer                           | File to download             |
+| --------------------------------------- | ---------------------------- |
+| Mac with Apple Silicon (M1, M2, M3, M4) | macOS **arm64** `.dmg`       |
+| Mac with Intel                          | macOS **x64** `.dmg`         |
+| Windows 10 or 11                        | Windows **x64** setup `.exe` |
 
 On a Mac, open the DMG, drag **proxybench** into Applications, then right-click
 it and choose **Open** the first time. You only do that once.
