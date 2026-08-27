@@ -1,6 +1,6 @@
 {
   "name": "proxybench",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Split HTTP proxy lists by subnet and measure Connect and TTFB",
   "type": "module",
   "scripts": {
