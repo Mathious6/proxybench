@@ -118,11 +118,16 @@ Bump `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`
 to the same `X.Y.Z`, merge to `main`, then tag `vX.Y.Z`.
 
 GitHub Actions (`.github/workflows/ci.yml` on `main` and pull requests,
-`.github/workflows/release.yml` on `vX.Y.Z`) builds macOS DMGs for Apple
-Silicon and Intel and a Windows NSIS setup wizard. macOS uses ad-hoc signing;
-Windows installers are unsigned.
+`.github/workflows/release.yml` on `vX.Y.Z`) builds Developer ID signed and
+Apple-notarized macOS DMGs for Apple Silicon and Intel and an unsigned Windows
+NSIS setup wizard.
 
 Updater releases require `TAURI_SIGNING_PRIVATE_KEY` and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The workflow keeps releases as drafts
 until `latest.json` contains macOS arm64, macOS x64, and Windows x64. Never
 replace published assets; ship a higher patch version.
+
+macOS releases require `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`, `APPLE_API_ISSUER`, and
+`APPLE_API_PRIVATE_KEY`. The certificate and API private key are base64
+encoded. Apple code signing is independent from updater signing.
