@@ -12,7 +12,8 @@ One window, not resizable. One workflow:
 
 1. Drop a `.txt` file or a folder of `.txt` files, or Open files
    (`host:port:user:pass` HTTP only).
-2. Table of IPv4 `/24` subnets. Country at import. Tags persist by CIDR.
+2. Table of IPv4 `/24` subnets. Country lookup batches missing imports and
+   refreshes every probed subnet. Tags persist by CIDR.
    Inventory persists locally; Open files appends. Last probe metrics persist
    until that `/24` gains lines. The last HTTPS target is remembered.
 3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current
@@ -58,7 +59,7 @@ asked.
 | Shell   | Tauri 2                                                                | egui, iced, Electron                  |
 | UI      | Svelte 5 + Tailwind 4 + TanStack Table                                 | router, extra pages, component kits   |
 | Probe   | tokio + HTTP CONNECT + rustls (ring) + hyper HTTP/1                    | reqwest, libcurl, isahc               |
-| Country | `GET https://api.country.is/{ip}` on one IP per `/24`, direct (`ureq`) | through-proxy lookup, GeoLite in-repo |
+| Country | `POST https://api.country.is/` in direct (`ureq`) batches of at most 100 IPs | through-proxy lookup, GeoLite in-repo |
 | Tags    | local JSON keyed by CIDR                                               | filename-as-identity                  |
 
 Connect = TCP to the proxy + CONNECT `200`, before origin TLS.

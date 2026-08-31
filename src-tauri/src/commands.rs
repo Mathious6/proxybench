@@ -26,6 +26,7 @@ pub fn open_last_target(app: &AppHandle) -> Result<last_target::Store, String> {
 pub struct RunResult {
     pub completed_at: u64,
     pub metrics: Vec<Metrics>,
+    pub countries: HashMap<String, String>,
 }
 
 #[tauri::command]
@@ -51,11 +52,17 @@ pub async fn start_run(
         }
         session.resolve_scope(cidrs)?
     };
+    let samples: Vec<_> = buckets
+        .iter()
+        .filter_map(|bucket| bucket.proxies.first().map(|proxy| proxy.host))
+        .collect();
     let window = app.clone();
-    let finished = run::probe_session(buckets, target, move |progress: Progress| {
+    let probe = run::probe_session(buckets, target, move |progress: Progress| {
         let _ = window.emit(PROGRESS_EVENT, progress);
-    })
-    .await;
+    });
+    let countries = tauri::async_runtime::spawn_blocking(move || crate::country::lookup(&samples));
+    let (finished, countries) = tokio::join!(probe, countries);
+    let countries = countries.map_err(|err| err.to_string())?;
     let completed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
@@ -67,7 +74,7 @@ pub async fn start_run(
             .iter()
             .map(|(cidr, metrics)| (cidr.clone(), stored_metrics(metrics)))
             .collect();
-        candidate.record_probes(completed_at, &stored);
+        candidate.record_probes(completed_at, &stored, &countries);
         let snapshot = candidate.snapshot();
         inventory.0.save(&snapshot)?;
         *session = candidate;
@@ -77,6 +84,7 @@ pub async fn start_run(
     Ok(RunResult {
         completed_at,
         metrics,
+        countries,
     })
 }
 

@@ -298,7 +298,9 @@
       const byCidr = new Map(probed.metrics.map((metrics) => [metrics.cidr, metrics]));
       rows = rows.map((row) => {
         const metrics = byCidr.get(row.cidr);
-        return metrics ? withMetrics(row, metrics, probed.completedAt) : row;
+        const country = probed.countries[row.cidr];
+        const next = metrics ? withMetrics(row, metrics, probed.completedAt) : row;
+        return country ? { ...next, country } : next;
       });
     } catch (error) {
       try {

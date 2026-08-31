@@ -64,9 +64,10 @@ usually already have it. Windows installers are unsigned.
    lines and `#` comments are ignored. Anything else is skipped. Imported
    lines, including credentials, are stored unencrypted in the app's local
    data directory.
-3. Rows appear immediately, one per IPv4 `/24`. Country is looked up from
-   the listed IP at import through [country.is](https://country.is), not
-   during the speed test. This sends one IP from each `/24` to that service.
+3. Rows appear immediately, one per IPv4 `/24`. Country is looked up in
+   batches from one listed IP per missing `/24` through
+   [country.is](https://country.is). Each Probe also refreshes the country
+   for every `/24` it covers.
 4. Tag subnets if you want. Tags are stored on this computer by CIDR and
    survive the next import. Click a column header to sort. **Filter** sits
     with Open files, Export, and Probe all. The table shows 15 subnets per

@@ -37,6 +37,7 @@ export type Progress = {
 export type RunResult = {
   completedAt: number;
   metrics: Metrics[];
+  countries: Record<string, string>;
 };
 
 export function emptyMetrics(): Pick<
