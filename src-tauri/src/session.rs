@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use crate::parse::ProxyLine;
@@ -107,8 +107,26 @@ impl Session {
         self.buckets.values().cloned().collect()
     }
 
-    pub fn bucket(&self, subnet: Subnet) -> Option<StoredBucket> {
-        self.buckets.get(&subnet).cloned()
+    pub fn resolve_scope(&self, cidrs: Option<Vec<String>>) -> Result<Vec<StoredBucket>, String> {
+        let Some(cidrs) = cidrs else {
+            return Ok(self.snapshot());
+        };
+        if cidrs.is_empty() {
+            return Err("Select at least one subnet.".into());
+        }
+        let subnets = cidrs
+            .into_iter()
+            .map(|cidr| Subnet::parse_cidr(&cidr).ok_or_else(|| "Unknown subnet.".to_string()))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        subnets
+            .into_iter()
+            .map(|subnet| {
+                self.buckets
+                    .get(&subnet)
+                    .cloned()
+                    .ok_or_else(|| "Unknown subnet.".to_string())
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -300,18 +318,60 @@ mod tests {
     }
 
     #[test]
-    fn bucket_returns_one_stored_subnet() {
+    fn resolve_scope_returns_all_buckets() {
         let mut session = Session::new();
         session.merge(
-            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
             &HashMap::new(),
         );
-        let one = session
-            .bucket(Subnet::from_host("192.0.2.10".parse().unwrap()))
+        let buckets = session.resolve_scope(None).unwrap();
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.subnet.cidr())
+                .collect::<Vec<_>>(),
+            vec!["192.0.2.0/24", "198.51.100.0/24"]
+        );
+    }
+
+    #[test]
+    fn resolve_scope_deduplicates_and_sorts_subnets() {
+        let mut session = Session::new();
+        session.merge(
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
+            &HashMap::new(),
+        );
+        let buckets = session
+            .resolve_scope(Some(vec![
+                "198.51.100.0/24".into(),
+                "192.0.2.0/24".into(),
+                "198.51.100.0/24".into(),
+            ]))
             .unwrap();
-        assert_eq!(one.proxies.len(), 1);
-        assert!(session
-            .bucket(Subnet::from_host("203.0.113.1".parse().unwrap()))
-            .is_none());
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.subnet.cidr())
+                .collect::<Vec<_>>(),
+            vec!["192.0.2.0/24", "198.51.100.0/24"]
+        );
+    }
+
+    #[test]
+    fn resolve_scope_rejects_empty_malformed_and_missing_subnets() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        assert!(matches!(
+            session.resolve_scope(Some(Vec::new())),
+            Err(error) if error == "Select at least one subnet."
+        ));
+        assert!(matches!(
+            session.resolve_scope(Some(vec!["192.0.2.10/24".into()])),
+            Err(error) if error == "Unknown subnet."
+        ));
+        assert!(matches!(
+            session.resolve_scope(Some(vec!["198.51.100.0/24".into()])),
+            Err(error) if error == "Unknown subnet."
+        ));
     }
 }

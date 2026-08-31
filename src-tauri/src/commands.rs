@@ -9,7 +9,6 @@ use crate::import::{self, InventoryStore, TagStore};
 use crate::last_target;
 use crate::run::{self, Metrics, Progress};
 use crate::session::{SessionStore, StoredMetrics};
-use crate::split::Subnet;
 use crate::target::Target;
 
 const LAST_TARGET_FILE: &str = "last-target.txt";
@@ -37,7 +36,7 @@ pub fn last_target(store: State<'_, LastTarget>) -> Result<Option<String>, Strin
 #[tauri::command]
 pub async fn start_run(
     url: String,
-    cidr: Option<String>,
+    cidrs: Option<Vec<String>>,
     app: AppHandle,
     session: State<'_, SessionStore>,
     last: State<'_, LastTarget>,
@@ -50,17 +49,7 @@ pub async fn start_run(
         if session.is_empty() {
             return Err("Import proxies before probing.".into());
         }
-        match cidr {
-            Some(value) => {
-                let subnet =
-                    Subnet::parse_cidr(&value).ok_or_else(|| "Unknown subnet.".to_string())?;
-                let bucket = session
-                    .bucket(subnet)
-                    .ok_or_else(|| "Unknown subnet.".to_string())?;
-                vec![bucket]
-            }
-            None => session.snapshot(),
-        }
+        session.resolve_scope(cidrs)?
     };
     let window = app.clone();
     let finished = run::probe_session(buckets, target, move |progress: Progress| {
@@ -104,7 +93,7 @@ fn stored_metrics(metrics: &Metrics) -> StoredMetrics {
 #[tauri::command]
 pub fn export_dir(
     path: String,
-    cidr: Option<String>,
+    cidrs: Option<Vec<String>>,
     session: State<'_, SessionStore>,
     tags: State<'_, TagStore>,
 ) -> Result<usize, String> {
@@ -113,17 +102,7 @@ pub fn export_dir(
         if session.is_empty() {
             return Err("Import proxies before exporting.".into());
         }
-        match cidr {
-            Some(value) => {
-                let subnet =
-                    Subnet::parse_cidr(&value).ok_or_else(|| "Unknown subnet.".to_string())?;
-                let bucket = session
-                    .bucket(subnet)
-                    .ok_or_else(|| "Unknown subnet.".to_string())?;
-                vec![bucket]
-            }
-            None => session.snapshot(),
-        }
+        session.resolve_scope(cidrs)?
     };
     let store = tags.0.lock().map_err(|err| err.to_string())?;
     export::write_dir(std::path::Path::new(&path), &buckets, &store)
@@ -146,7 +125,8 @@ pub fn remove_subnet(
     inventory: State<'_, InventoryStore>,
     tags: State<'_, TagStore>,
 ) -> Result<Vec<import::SubnetRow>, String> {
-    let subnet = Subnet::parse_cidr(&cidr).ok_or_else(|| "Unknown subnet.".to_string())?;
+    let subnet =
+        crate::split::Subnet::parse_cidr(&cidr).ok_or_else(|| "Unknown subnet.".to_string())?;
     let snapshot = {
         let mut session = session.0.lock().map_err(|err| err.to_string())?;
         let mut candidate = session.clone();

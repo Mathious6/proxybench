@@ -27,11 +27,13 @@
 
   let {
     rows,
+    selectedCidrs,
     draft,
     locked,
     filtering,
     pageReset,
     onFilterCount,
+    onSelectionChange,
     onPageChange,
     onAddTag,
     onRemoveTag,
@@ -40,11 +42,13 @@
     onRemoveSubnet,
   }: {
     rows: SubnetRow[];
+    selectedCidrs: Set<string>;
     draft: Record<string, string>;
     locked: boolean;
     filtering: boolean;
     pageReset: number;
     onFilterCount: (count: number) => void;
+    onSelectionChange: (cidrs: Set<string>) => void;
     onPageChange: (page: {
       label: string;
       canPrevious: boolean;
@@ -54,8 +58,8 @@
     }) => void;
     onAddTag: (cidr: string) => void;
     onRemoveTag: (cidr: string, tag: string) => void;
-    onProbeSubnet: (cidr: string) => void;
-    onExportSubnet: (cidr: string) => void;
+    onProbeSubnet: (cidrs: string[]) => void;
+    onExportSubnet: (cidrs: string[]) => void;
     onRemoveSubnet: (cidr: string) => void;
   } = $props();
 
@@ -204,6 +208,7 @@
     table.getAllLeafColumns().filter((column) => column.getIsFiltered()).length,
   );
   const filteredCount = $derived(table.getPrePaginatedRowModel().rows.length);
+  const orderedRows = $derived(table.getPrePaginatedRowModel().rows);
   const pagination = $derived(table.atoms.pagination.get());
   const fillerCount = $derived(Math.max(0, PAGE_SIZE - visibleRows.length));
   const rangeStart = $derived(filteredCount === 0 ? 0 : pagination.pageIndex * PAGE_SIZE + 1);
@@ -258,11 +263,73 @@
     };
   });
 
+  $effect(() => {
+    function selectByKeyboard(event: KeyboardEvent) {
+      if (menu || isInteractive(event.target) || isMenu(event.target)) {
+        return;
+      }
+      if (event.key === "Escape" && selectedCidrs.size > 0) {
+        onSelectionChange(new Set());
+        rangeAnchor = null;
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        onSelectionChange(new Set(orderedRows.map((row) => row.original.cidr)));
+      }
+    }
+    window.addEventListener("keydown", selectByKeyboard);
+    return () => window.removeEventListener("keydown", selectByKeyboard);
+  });
+
   let menu = $state<{ cidr: string; x: number; y: number } | null>(null);
+  let rangeAnchor = $state<string | null>(null);
 
   function openMenu(event: MouseEvent, cidr: string) {
     event.preventDefault();
     menu = { cidr, x: event.clientX, y: event.clientY };
+  }
+
+  function selectRow(event: MouseEvent, cidr: string) {
+    if (isInteractive(event.target)) {
+      return;
+    }
+    const additive = event.metaKey || event.ctrlKey;
+    if (event.shiftKey && rangeAnchor) {
+      const start = orderedRows.findIndex((row) => row.original.cidr === rangeAnchor);
+      const end = orderedRows.findIndex((row) => row.original.cidr === cidr);
+      if (start >= 0 && end >= 0) {
+        const range = orderedRows
+          .slice(Math.min(start, end), Math.max(start, end) + 1)
+          .map((row) => row.original.cidr);
+        onSelectionChange(additive ? new Set([...selectedCidrs, ...range]) : new Set(range));
+        return;
+      }
+    }
+    if (additive) {
+      const next = new Set(selectedCidrs);
+      if (next.has(cidr)) {
+        next.delete(cidr);
+      } else {
+        next.add(cidr);
+      }
+      onSelectionChange(next);
+    } else {
+      onSelectionChange(new Set([cidr]));
+    }
+    rangeAnchor = cidr;
+  }
+
+  function isInteractive(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest("button, input, select, textarea, a"));
+  }
+
+  function isMenu(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest('[role="menu"]'));
+  }
+
+  function menuScope(cidr: string): string[] {
+    return selectedCidrs.has(cidr) ? [...selectedCidrs] : [cidr];
   }
 
   const numericIds = new Set([
@@ -411,10 +478,14 @@
         </tr>
       {/each}
     </thead>
-    <tbody>
+    <tbody class="select-none">
       {#each visibleRows as row (row.id)}
         <tr
-          class="group h-8 border-t border-line hover:bg-raised"
+          class="group h-8 border-t border-line {selectedCidrs.has(row.original.cidr)
+            ? 'bg-accent/10 shadow-[inset_3px_0_0_var(--color-accent)] hover:bg-accent/15'
+            : 'hover:bg-raised'}"
+          aria-selected={selectedCidrs.has(row.original.cidr)}
+          onclick={(event) => selectRow(event, row.original.cidr)}
           oncontextmenu={(event) => openMenu(event, row.original.cidr)}
         >
           {#each row.getAllCells() as cell (cell.id)}
@@ -459,14 +530,14 @@
       const cidr = menu?.cidr;
       menu = null;
       if (cidr) {
-        onProbeSubnet(cidr);
+        onProbeSubnet(menuScope(cidr));
       }
     }}
     onExport={() => {
       const cidr = menu?.cidr;
       menu = null;
       if (cidr) {
-        onExportSubnet(cidr);
+        onExportSubnet(menuScope(cidr));
       }
     }}
     onRemove={() => {

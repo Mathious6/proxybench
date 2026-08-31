@@ -27,7 +27,8 @@
   let targetField = $state<HTMLInputElement | null>(null);
   let filtering = $state(false);
   let filterCount = $state(0);
-  let probeCidr = $state<string | null>(null);
+  let selectedCidrs = $state<Set<string>>(new Set());
+  let probeCidrs = $state<string[] | null>(null);
   let pageReset = $state(0);
   let version = $state("");
   let updating = $state(false);
@@ -41,6 +42,16 @@
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const locked = $derived(busy || running || updating);
+  const selectedScope = $derived(selectedCidrs.size > 0 ? [...selectedCidrs] : null);
+  const selectedLabel = $derived(selectedCidrs.size > 0 ? `${selectedCidrs.size} selected` : "");
+
+  $effect(() => {
+    const available = new Set(rows.map((row) => row.cidr));
+    const next = new Set([...selectedCidrs].filter((cidr) => available.has(cidr)));
+    if (next.size !== selectedCidrs.size) {
+      selectedCidrs = next;
+    }
+  });
 
   function showNotice(message: string, isError: boolean) {
     if (noticeTimer) {
@@ -172,7 +183,7 @@
     await importPaths(Array.isArray(selected) ? selected : [selected]);
   }
 
-  async function exportFiles(cidr?: string) {
+  async function exportFiles(cidrs: string[] | null = selectedScope) {
     if (locked || rows.length === 0) {
       return;
     }
@@ -193,7 +204,7 @@
     working = "Exporting…";
     clearNotice();
     try {
-      const written = await invoke<number>("export_dir", { path, cidr: cidr ?? null });
+      const written = await invoke<number>("export_dir", { path, cidrs });
       showNotice(written === 1 ? "Exported 1 file" : `Exported ${written} files`, false);
     } catch (error) {
       showNotice(String(error), true);
@@ -229,13 +240,11 @@
   }
 
   const probeScope = $derived.by(() => {
-    if (probeCidr) {
-      const row = rows.find((item) => item.cidr === probeCidr);
-      if (!row) {
-        return "";
-      }
-      const n = row.quantity;
-      return `${row.cidr} · ${n.toLocaleString()} ${n === 1 ? "proxy" : "proxies"}`;
+    const cidrs = probeCidrs;
+    if (cidrs) {
+      const scoped = rows.filter((row) => cidrs.includes(row.cidr));
+      const proxies = scoped.reduce((sum, row) => sum + row.quantity, 0);
+      return `${scoped.length.toLocaleString()} ${scoped.length === 1 ? "subnet" : "subnets"} · ${proxies.toLocaleString()} ${proxies === 1 ? "proxy" : "proxies"}`;
     }
     const n = rows.length;
     const proxies = rows.reduce((sum, row) => sum + row.quantity, 0);
@@ -246,20 +255,20 @@
     if (locked || rows.length === 0) {
       return;
     }
-    probeCidr = null;
+    probeCidrs = selectedScope;
     asking = true;
   }
 
   function cancelProbe() {
     asking = false;
-    probeCidr = null;
+    probeCidrs = null;
   }
 
-  async function probeSubnet(cidr: string) {
+  async function probeSubnets(cidrs: string[]) {
     if (locked) {
       return;
     }
-    probeCidr = cidr;
+    probeCidrs = cidrs;
     if (target.trim()) {
       await confirmProbe();
       return;
@@ -272,20 +281,20 @@
     if (!url || locked) {
       return;
     }
-    const cidr = probeCidr;
+    const cidrs = probeCidrs;
     asking = false;
     running = true;
     clearNotice();
     done = 0;
-    const scoped = cidr ? rows.filter((row) => row.cidr === cidr) : rows;
+    const scoped = cidrs ? rows.filter((row) => cidrs.includes(row.cidr)) : rows;
     total = scoped.reduce((sum, row) => sum + row.quantity, 0);
     etaSeconds = null;
     const previous = rows;
     rows = rows.map((row) =>
-      (!cidr || row.cidr === cidr) && row.quantity > 0 ? { ...row, ...emptyMetrics() } : row,
+      (!cidrs || cidrs.includes(row.cidr)) && row.quantity > 0 ? { ...row, ...emptyMetrics() } : row,
     );
     try {
-      const probed = await invoke<RunResult>("start_run", { url, cidr });
+      const probed = await invoke<RunResult>("start_run", { url, cidrs });
       const byCidr = new Map(probed.metrics.map((metrics) => [metrics.cidr, metrics]));
       rows = rows.map((row) => {
         const metrics = byCidr.get(row.cidr);
@@ -304,7 +313,7 @@
     } finally {
       running = false;
       etaSeconds = null;
-      probeCidr = null;
+      probeCidrs = null;
     }
   }
 
@@ -462,7 +471,9 @@
             {#if busy && !running}
               {working || "Working…"}
             {:else}
-              {rows.length} {rows.length === 1 ? "subnet" : "subnets"}
+              {rows.length} {rows.length === 1 ? "subnet" : "subnets"}{selectedLabel
+                ? ` · ${selectedLabel}`
+                : ""}
             {/if}
           </p>
         </div>
@@ -498,21 +509,23 @@
             disabled={locked}
             onclick={openProbe}
           >
-            Probe all
+            {selectedLabel ? "Probe selected" : "Probe all"}
           </button>
         </div>
       </header>
       <SubnetTable
         {rows}
+        {selectedCidrs}
         {draft}
         {locked}
         {filtering}
         {pageReset}
         onFilterCount={(count) => (filterCount = count)}
+        onSelectionChange={(cidrs) => (selectedCidrs = cidrs)}
         onPageChange={(page) => (paging = page)}
         onAddTag={commitTag}
         onRemoveTag={removeTag}
-        onProbeSubnet={probeSubnet}
+        onProbeSubnet={probeSubnets}
         onExportSubnet={exportFiles}
         onRemoveSubnet={removeSubnet}
       />
