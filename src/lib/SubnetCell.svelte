@@ -1,7 +1,5 @@
 <script lang="ts">
-  import Mark from "./Mark.svelte";
-
   let { cidr }: { cidr: string } = $props();
 </script>
 
-<Mark value={cidr} />
+<span class="font-mono text-xs text-text">{cidr}</span>

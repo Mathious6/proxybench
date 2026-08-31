@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Update } from "@tauri-apps/plugin-updater";
   import { checkForUpdate, installUpdate, type UpdateProgress } from "$lib/update";
+  import Button from "./ui/Button.svelte";
 
   let {
     disabled,
@@ -89,11 +90,10 @@
   }
 </script>
 
-<button
-  type="button"
-  class="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm {update
-    ? 'text-accent'
-    : 'text-faint hover:text-text'} focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+<Button
+  variant="quiet"
+  size="icon"
+  class="relative {update ? 'text-accent' : 'text-faint'}"
   disabled={disabled || checking || installing}
   aria-label={label}
   aria-busy={checking || installing}
@@ -106,5 +106,5 @@
   {#if update && !installing}
     <span class="absolute right-0 top-0 h-1 w-1 rounded-full bg-accent" aria-hidden="true"></span>
   {/if}
-</button>
+</Button>
 <span class="sr-only" role="status" aria-live="polite">{announcement}</span>
