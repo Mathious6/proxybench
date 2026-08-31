@@ -15,13 +15,17 @@ One window, not resizable. One workflow:
 2. Table of IPv4 `/24` subnets. Country at import. Tags persist by CIDR.
    Inventory persists locally; Open files appends. Last probe metrics persist
    until that `/24` gains lines. The last HTTPS target is remembered.
-3. Probe all or Probe one `/24` → OK + Connect p50/p95 + TTFB p50/p95 + last
-   probe. 5 s timeout, 5 starts/s, 32 in flight.
+3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current
+   sorted and filtered rows; selections persist through sort, filter, and
+   pages. Probe all, selected, or one `/24` → OK + Connect p50/p95 + TTFB
+   p50/p95 + last probe. 5 s timeout, 5 starts/s, 32 in flight.
 4. Export `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Untagged files start with the
    country code. No country → `XX`.
-5. Filter sits with Open files, Export, and Probe all. Probe progress and
-   the version sit in the bottom bar. 15 subnets per page. Right-click a row
-   to Probe, Export, or Remove.
+5. Filter sits with Open files, Export, and Probe all. Toolbar Probe and
+   Export act on selected rows when present. Probe progress and the version
+   sit in the bottom bar. 15 subnets per page. Right-click a selected row to
+   Probe or Export the selection; otherwise those actions apply to that row.
+   Remove always applies to that row.
 
 Probe is the only action verb for a run. Anything else is out of scope until
 asked.

@@ -69,15 +69,21 @@ usually already have it. Windows installers are unsigned.
    during the speed test. This sends one IP from each `/24` to that service.
 4. Tag subnets if you want. Tags are stored on this computer by CIDR and
    survive the next import. Click a column header to sort. **Filter** sits
-   with Open files, Export, and Probe all. The table shows 15 subnets per
-   page. Probe progress and the app version sit in the bottom bar.
-   Right-click a row to Probe, Export, or Remove that subnet.
-5. **Probe all**, or Probe one row. Paste one HTTPS URL the first time; it
+    with Open files, Export, and Probe all. The table shows 15 subnets per
+    page. Click a row to select it; Command-click on macOS or Ctrl-click on
+    Windows toggles rows, and Shift-click selects the sorted and filtered
+    range across pages; add Command/Ctrl to extend that range. Selected rows
+    persist while sorting and filtering.
+    Probe progress and the app version sit in the bottom bar. Right-click a
+    selected row to Probe or Export the selection, or any row to act on only
+    that row; Remove always removes only that row.
+5. **Probe all**, selected rows, or one row. Paste one HTTPS URL the first time; it
    is remembered. Each proxy is probed once with a 5 second timeout. The
    table fills with OK, Connect, TTFB (p50 and p95), and Last probe. Those
    stats survive a restart. Adding proxies to a `/24` drops its last probe.
    Failures are omitted from those timings.
-6. **Export** writes one `.txt` per subnet, source lines verbatim:
+6. **Export** writes one `.txt` per selected subnet, or every subnet when none
+   is selected, source lines verbatim:
    `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Example:
    `isp-mobile_FR_192.0.2.0_24_42.txt`. No tags means the filename starts
    with the country code. No country means `XX`.
