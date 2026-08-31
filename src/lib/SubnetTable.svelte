@@ -14,6 +14,7 @@
     sortFn_alphanumeric,
     tableFeatures,
   } from "@tanstack/svelte-table";
+  import { untrack } from "svelte";
   import Mark from "./Mark.svelte";
   import RowMenu from "./RowMenu.svelte";
   import SubnetCell from "./SubnetCell.svelte";
@@ -234,7 +235,7 @@
 
   $effect(() => {
     void pageReset;
-    table.setPageIndex(0);
+    untrack(() => table.setPageIndex(0));
   });
 
   $effect(() => {
