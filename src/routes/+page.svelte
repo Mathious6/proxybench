@@ -59,6 +59,12 @@
     }
   });
 
+  $effect(() => {
+    if (selectedCidrs.size > 0) {
+      exportMenuOpen = false;
+    }
+  });
+
   function showNotice(message: string, isError: boolean) {
     if (noticeTimer) {
       clearTimeout(noticeTimer);
