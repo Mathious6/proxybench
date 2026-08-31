@@ -103,6 +103,17 @@ impl Session {
         }
     }
 
+    pub fn record_countries(&mut self, countries: &HashMap<String, String>) {
+        for (cidr, country) in countries {
+            let Some(subnet) = Subnet::parse_cidr(cidr) else {
+                continue;
+            };
+            if let Some(bucket) = self.buckets.get_mut(&subnet) {
+                bucket.country = Some(country.clone());
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<StoredBucket> {
         self.buckets.values().cloned().collect()
     }
@@ -315,6 +326,24 @@ mod tests {
             .unwrap();
         assert_eq!(first.last_probe, Some(probe(42, 1)));
         assert_eq!(second.last_probe, None);
+    }
+
+    #[test]
+    fn record_countries_refreshes_valid_values_and_keeps_missing_ones() {
+        let mut session = Session::new();
+        let mut initial = HashMap::new();
+        initial.insert("192.0.2.0/24".into(), "FR".into());
+        initial.insert("198.51.100.0/24".into(), "DE".into());
+        session.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &initial,
+        );
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".into(), "US".into());
+        session.record_countries(&countries);
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot[0].country.as_deref(), Some("US"));
+        assert_eq!(snapshot[1].country.as_deref(), Some("DE"));
     }
 
     #[test]

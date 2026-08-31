@@ -26,6 +26,7 @@ pub fn open_last_target(app: &AppHandle) -> Result<last_target::Store, String> {
 pub struct RunResult {
     pub completed_at: u64,
     pub metrics: Vec<Metrics>,
+    pub countries: HashMap<String, String>,
 }
 
 #[tauri::command]
@@ -51,6 +52,19 @@ pub async fn start_run(
         }
         session.resolve_scope(cidrs)?
     };
+    let samples: Vec<_> = buckets
+        .iter()
+        .filter_map(|bucket| bucket.proxies.first().map(|proxy| proxy.host))
+        .collect();
+    let countries = tauri::async_runtime::spawn_blocking(move || crate::country::lookup(&samples));
+    let countries = countries.await.map_err(|err| err.to_string())?;
+    if !countries.is_empty() {
+        let mut session = session.0.lock().map_err(|err| err.to_string())?;
+        let mut candidate = session.clone();
+        candidate.record_countries(&countries);
+        inventory.0.save(&candidate.snapshot())?;
+        *session = candidate;
+    }
     let window = app.clone();
     let finished = run::probe_session(buckets, target, move |progress: Progress| {
         let _ = window.emit(PROGRESS_EVENT, progress);
@@ -77,6 +91,7 @@ pub async fn start_run(
     Ok(RunResult {
         completed_at,
         metrics,
+        countries,
     })
 }
 
