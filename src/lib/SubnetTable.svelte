@@ -272,7 +272,7 @@
   }
 
   function selectRow(event: MouseEvent, cidr: string) {
-    if ((event.target as Element).closest("button, input, select, textarea, a")) {
+    if (isInteractive(event.target)) {
       return;
     }
     const additive = event.metaKey || event.ctrlKey;
@@ -299,6 +299,16 @@
       onSelectionChange(new Set([cidr]));
     }
     rangeAnchor = cidr;
+  }
+
+  function preventRangeTextSelection(event: MouseEvent) {
+    if (event.shiftKey && !isInteractive(event.target)) {
+      event.preventDefault();
+    }
+  }
+
+  function isInteractive(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest("button, input, select, textarea, a"));
   }
 
   function menuScope(cidr: string): string[] {
@@ -451,13 +461,14 @@
         </tr>
       {/each}
     </thead>
-    <tbody>
+    <tbody class="select-none">
       {#each visibleRows as row (row.id)}
         <tr
           class="group h-8 border-t border-line {selectedCidrs.has(row.original.cidr)
-            ? 'bg-raised'
+            ? 'bg-accent/10 shadow-[inset_3px_0_0_var(--color-accent)] hover:bg-accent/15'
             : 'hover:bg-raised'}"
           aria-selected={selectedCidrs.has(row.original.cidr)}
+          onmousedown={preventRangeTextSelection}
           onclick={(event) => selectRow(event, row.original.cidr)}
           oncontextmenu={(event) => openMenu(event, row.original.cidr)}
         >
