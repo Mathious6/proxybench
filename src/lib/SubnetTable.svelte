@@ -263,6 +263,25 @@
     };
   });
 
+  $effect(() => {
+    function selectByKeyboard(event: KeyboardEvent) {
+      if (menu || isInteractive(event.target) || isMenu(event.target)) {
+        return;
+      }
+      if (event.key === "Escape" && selectedCidrs.size > 0) {
+        onSelectionChange(new Set());
+        rangeAnchor = null;
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        onSelectionChange(new Set(orderedRows.map((row) => row.original.cidr)));
+      }
+    }
+    window.addEventListener("keydown", selectByKeyboard);
+    return () => window.removeEventListener("keydown", selectByKeyboard);
+  });
+
   let menu = $state<{ cidr: string; x: number; y: number } | null>(null);
   let rangeAnchor = $state<string | null>(null);
 
@@ -309,6 +328,10 @@
 
   function isInteractive(target: EventTarget | null): boolean {
     return target instanceof Element && Boolean(target.closest("button, input, select, textarea, a"));
+  }
+
+  function isMenu(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest('[role="menu"]'));
   }
 
   function menuScope(cidr: string): string[] {

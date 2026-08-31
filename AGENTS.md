@@ -16,8 +16,9 @@ One window, not resizable. One workflow:
    Inventory persists locally; Open files appends. Last probe metrics persist
    until that `/24` gains lines. The last HTTPS target is remembered.
 3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current
-   sorted and filtered rows; selections persist through sort, filter, and
-   pages. Probe all, selected, or one `/24` → OK + Connect p50/p95 + TTFB
+   sorted and filtered rows; Cmd/Ctrl-A selects all filtered rows and Escape
+   clears selection. Selections persist through sort, filter, and pages.
+   Probe all, selected, or one `/24` → OK + Connect p50/p95 + TTFB
    p50/p95 + last probe. 5 s timeout, 5 starts/s, 32 in flight.
 4. Export `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Untagged files start with the
    country code. No country → `XX`.

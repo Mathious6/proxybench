@@ -72,7 +72,8 @@ usually already have it. Windows installers are unsigned.
     with Open files, Export, and Probe all. The table shows 15 subnets per
     page. Click a row to select it; Command-click on macOS or Ctrl-click on
     Windows toggles rows, and Shift-click selects the sorted and filtered
-    range across pages; add Command/Ctrl to extend that range. Selected rows
+    range across pages; add Command/Ctrl to extend that range. Command/Ctrl-A
+    selects all filtered rows, and Escape clears the selection. Selected rows
     persist while sorting and filtering.
     Probe progress and the app version sit in the bottom bar. Right-click a
     selected row to Probe or Export the selection, or any row to act on only
