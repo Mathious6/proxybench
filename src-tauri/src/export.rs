@@ -5,6 +5,10 @@ use crate::session::StoredBucket;
 use crate::tags::{Store, Tag};
 
 pub fn filename(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> String {
+    format!("{}.txt", category(tags, country, bucket))
+}
+
+pub fn category(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> String {
     let country = country
         .filter(|code| code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()))
         .map(|code| code.to_ascii_uppercase())
@@ -12,8 +16,8 @@ pub fn filename(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> S
     let ip = bucket.subnet.network();
     let qty = bucket.proxies.len();
     match tag_stem(tags) {
-        Some(tags) => format!("{tags}_{country}_{ip}_24_{qty}.txt"),
-        None => format!("{country}_{ip}_24_{qty}.txt"),
+        Some(tags) => format!("{tags}_{country}_{ip}_24_{qty}"),
+        None => format!("{country}_{ip}_24_{qty}"),
     }
 }
 
@@ -67,32 +71,11 @@ fn write_file(path: &Path, bucket: &StoredBucket) -> Result<(), String> {
         body.push_str(&proxy.source);
         body.push('\n');
     }
-    write_mode(path, body.as_bytes()).map_err(|err| io_error(path, err))
+    crate::secure_file::write(path, body.as_bytes()).map_err(|err| io_error(path, err))
 }
 
 fn io_error(path: &Path, err: std::io::Error) -> String {
     format!("Could not write {} ({})", path.display(), err.kind())
-}
-
-fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(bytes)?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, bytes)
-    }
 }
 
 #[cfg(test)]
@@ -135,6 +118,16 @@ mod tests {
             &bucket("51.194.38.2", 42),
         );
         assert_eq!(name, "isp-mobile_FR_51.194.38.0_24_42.txt");
+    }
+
+    #[test]
+    fn category_is_the_filename_without_the_extension() {
+        let bucket = bucket("51.194.38.2", 42);
+        let category = category(&tags(&["isp", "mobile"]), Some("fr"), &bucket);
+        assert_eq!(
+            filename(&tags(&["isp", "mobile"]), Some("fr"), &bucket),
+            format!("{category}.txt")
+        );
     }
 
     #[test]

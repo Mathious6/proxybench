@@ -192,32 +192,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    write_mode(&tmp, bytes).map_err(|err| err.to_string())?;
+    crate::secure_file::write(&tmp, bytes).map_err(|err| err.to_string())?;
     fs::rename(&tmp, path).map_err(|err| {
         let _ = fs::remove_file(&tmp);
         err.to_string()
     })
-}
-
-fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(bytes)?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, bytes)
-    }
 }
 
 #[cfg(test)]

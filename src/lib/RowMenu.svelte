@@ -5,6 +5,7 @@
     locked,
     onProbe,
     onExport,
+    onExportAycd,
     onRemove,
     onDismiss,
   }: {
@@ -13,6 +14,7 @@
     locked: boolean;
     onProbe: () => void;
     onExport: () => void;
+    onExportAycd: () => void;
     onRemove: () => void;
     onDismiss: () => void;
   } = $props();
@@ -62,6 +64,15 @@
     onclick={onExport}
   >
     Export
+  </button>
+  <button
+    type="button"
+    class="block w-full px-3 py-1.5 text-left hover:bg-bg disabled:opacity-40"
+    disabled={locked}
+    role="menuitem"
+    onclick={onExportAycd}
+  >
+    Export for AYCD (.json)
   </button>
   <button
     type="button"

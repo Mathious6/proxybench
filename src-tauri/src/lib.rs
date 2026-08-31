@@ -1,3 +1,4 @@
+mod aycd;
 mod commands;
 mod country;
 mod export;
@@ -7,6 +8,7 @@ mod last_target;
 mod parse;
 mod probe;
 mod run;
+mod secure_file;
 mod session;
 mod split;
 mod stats;
@@ -42,6 +44,7 @@ pub fn run() {
             commands::last_target,
             commands::start_run,
             commands::export_dir,
+            commands::export_aycd,
             commands::session_rows,
             commands::remove_subnet
         ])

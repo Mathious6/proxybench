@@ -4,11 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::aycd;
 use crate::export;
 use crate::import::{self, InventoryStore, TagStore};
 use crate::last_target;
 use crate::run::{self, Metrics, Progress};
-use crate::session::{SessionStore, StoredMetrics};
+use crate::session::{SessionStore, StoredBucket, StoredMetrics};
 use crate::target::Target;
 
 const LAST_TARGET_FILE: &str = "last-target.txt";
@@ -112,15 +113,32 @@ pub fn export_dir(
     session: State<'_, SessionStore>,
     tags: State<'_, TagStore>,
 ) -> Result<usize, String> {
-    let buckets = {
-        let session = session.0.lock().map_err(|err| err.to_string())?;
-        if session.is_empty() {
-            return Err("Import proxies before exporting.".into());
-        }
-        session.resolve_scope(cidrs)?
-    };
+    let buckets = export_buckets(&session, cidrs)?;
     let store = tags.0.lock().map_err(|err| err.to_string())?;
     export::write_dir(std::path::Path::new(&path), &buckets, &store)
+}
+
+#[tauri::command]
+pub fn export_aycd(
+    path: String,
+    cidrs: Option<Vec<String>>,
+    session: State<'_, SessionStore>,
+    tags: State<'_, TagStore>,
+) -> Result<usize, String> {
+    let buckets = export_buckets(&session, cidrs)?;
+    let store = tags.0.lock().map_err(|err| err.to_string())?;
+    aycd::write(std::path::Path::new(&path), &buckets, &store)
+}
+
+fn export_buckets(
+    session: &SessionStore,
+    cidrs: Option<Vec<String>>,
+) -> Result<Vec<StoredBucket>, String> {
+    let session = session.0.lock().map_err(|err| err.to_string())?;
+    if session.is_empty() {
+        return Err("Import proxies before exporting.".into());
+    }
+    session.resolve_scope(cidrs)
 }
 
 #[tauri::command]
