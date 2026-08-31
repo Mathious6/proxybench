@@ -9,6 +9,8 @@ const ENDPOINT: &str = "https://api.country.is/";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const BATCH_SIZE: usize = 100;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
+const RETRY_DELAY: Duration = Duration::from_millis(250);
+const ATTEMPTS: usize = 2;
 
 #[derive(serde::Deserialize)]
 struct Lookup {
@@ -22,7 +24,7 @@ pub fn lookup(ips: &[Ipv4Addr]) -> HashMap<String, String> {
 
 fn lookup_with<F>(ips: &[Ipv4Addr], mut send: F) -> HashMap<String, String>
 where
-    F: FnMut(&[Ipv4Addr]) -> Option<Vec<Lookup>>,
+    F: FnMut(&[Ipv4Addr]) -> Result<Vec<Lookup>, ()>,
 {
     let ips: Vec<_> = ips
         .iter()
@@ -35,14 +37,20 @@ where
     let mut last_request: Option<Instant> = None;
 
     for batch in ips.chunks(BATCH_SIZE) {
-        if let Some(last_request) = last_request {
-            let elapsed = last_request.elapsed();
-            if elapsed < REQUEST_INTERVAL {
-                thread::sleep(REQUEST_INTERVAL - elapsed);
+        let mut rows = None;
+        for attempt in 0..ATTEMPTS {
+            wait_for_request(last_request);
+            last_request = Some(Instant::now());
+            match send(batch) {
+                Ok(value) => {
+                    rows = Some(value);
+                    break;
+                }
+                Err(()) if attempt + 1 < ATTEMPTS => thread::sleep(RETRY_DELAY),
+                Err(()) => {}
             }
         }
-        last_request = Some(Instant::now());
-        let Some(rows) = send(batch) else {
+        let Some(rows) = rows else {
             continue;
         };
         for row in rows {
@@ -59,14 +67,23 @@ where
     countries
 }
 
-fn fetch(ips: &[Ipv4Addr]) -> Option<Vec<Lookup>> {
+fn wait_for_request(last_request: Option<Instant>) {
+    if let Some(last_request) = last_request {
+        let elapsed = last_request.elapsed();
+        if elapsed < REQUEST_INTERVAL {
+            thread::sleep(REQUEST_INTERVAL - elapsed);
+        }
+    }
+}
+
+fn fetch(ips: &[Ipv4Addr]) -> Result<Vec<Lookup>, ()> {
     let ips: Vec<_> = ips.iter().map(Ipv4Addr::to_string).collect();
     ureq::post(ENDPOINT)
         .timeout(TIMEOUT)
         .send_json(ips)
-        .ok()?
+        .map_err(|_| ())?
         .into_json()
-        .ok()
+        .map_err(|_| ())
 }
 
 fn normalize(value: Option<&str>) -> Option<String> {
@@ -98,7 +115,7 @@ mod tests {
             let mut sent = Vec::new();
             lookup_with(&ips(count), |batch| {
                 sent.push(batch.len());
-                Some(Vec::new())
+                Ok(Vec::new())
             });
             assert_eq!(sent, sizes);
         }
@@ -111,7 +128,7 @@ mod tests {
         let mut sent = Vec::new();
         let countries = lookup_with(&[first, second, first], |batch| {
             sent.extend_from_slice(batch);
-            Some(vec![
+            Ok(vec![
                 Lookup {
                     ip: second.to_string(),
                     country: Some("de".into()),
@@ -131,7 +148,7 @@ mod tests {
     fn lookup_ignores_omitted_malformed_and_invalid_rows() {
         let requested: Ipv4Addr = "192.0.2.10".parse().unwrap();
         let countries = lookup_with(&[requested], |_| {
-            Some(vec![
+            Ok(vec![
                 Lookup {
                     ip: "not-an-ip".into(),
                     country: Some("FR".into()),
@@ -147,6 +164,33 @@ mod tests {
             ])
         });
         assert!(countries.is_empty());
+    }
+
+    #[test]
+    fn lookup_retries_failed_batches() {
+        let requested: Ipv4Addr = "151.242.94.0".parse().unwrap();
+        let mut attempts = 0;
+        let countries = lookup_with(&[requested], |_| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(())
+            } else {
+                Ok(vec![Lookup {
+                    ip: requested.to_string(),
+                    country: Some("DE".into()),
+                }])
+            }
+        });
+        assert_eq!(attempts, 2);
+        assert_eq!(countries.get("151.242.94.0/24"), Some(&"DE".into()));
+    }
+
+    #[test]
+    fn lookup_decodes_bulk_response() {
+        let rows: Vec<Lookup> =
+            serde_json::from_str(r#"[{"ip":"151.242.94.0","country":"DE"}]"#).unwrap();
+        assert_eq!(rows[0].ip, "151.242.94.0");
+        assert_eq!(rows[0].country.as_deref(), Some("DE"));
     }
 
     #[test]
