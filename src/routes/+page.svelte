@@ -10,7 +10,10 @@
   import { emptyMetrics, withMetrics } from "$lib/import";
   import SubnetTable from "$lib/SubnetTable.svelte";
   import ExportMenu from "$lib/ExportMenu.svelte";
+  import SelectionActions from "$lib/SelectionActions.svelte";
   import UpdateControl from "$lib/UpdateControl.svelte";
+  import Button from "$lib/ui/Button.svelte";
+  import Dialog from "$lib/ui/Dialog.svelte";
 
   let rows = $state<SubnetRow[]>([]);
   let hovering = $state(false);
@@ -25,7 +28,6 @@
   let failed = $state(false);
   let working = $state("");
   let draft = $state<Record<string, string>>({});
-  let targetField = $state<HTMLInputElement | null>(null);
   let filtering = $state(false);
   let filterCount = $state(0);
   let selectedCidrs = $state<Set<string>>(new Set());
@@ -46,7 +48,6 @@
 
   const locked = $derived(busy || running || updating);
   const selectedScope = $derived(selectedCidrs.size > 0 ? [...selectedCidrs] : null);
-  const selectedLabel = $derived(selectedCidrs.size > 0 ? `${selectedCidrs.size} selected` : "");
 
   $effect(() => {
     const available = new Set(rows.map((row) => row.cidr));
@@ -79,12 +80,6 @@
     notice = "";
     failed = false;
   }
-
-  $effect(() => {
-    if (asking) {
-      targetField?.focus();
-    }
-  });
 
   onMount(() => {
     let disposed = false;
@@ -187,6 +182,7 @@
   }
 
   async function exportFiles(cidrs: string[] | null = selectedScope) {
+    exportMenuOpen = false;
     if (locked || rows.length === 0) {
       return;
     }
@@ -252,7 +248,6 @@
 
   function closeExportMenu() {
     exportMenuOpen = false;
-    exportMenuTrigger?.focus();
   }
 
   $effect(() => {
@@ -309,6 +304,7 @@
     if (locked || rows.length === 0) {
       return;
     }
+    exportMenuOpen = false;
     probeCidrs = selectedScope;
     asking = true;
   }
@@ -322,6 +318,7 @@
     if (locked) {
       return;
     }
+    exportMenuOpen = false;
     probeCidrs = cidrs;
     if (target.trim()) {
       await confirmProbe();
@@ -453,18 +450,8 @@
     </div>
   {/if}
   {#if asking}
-    <div
-      class="absolute inset-0 z-20 flex items-center justify-center bg-bg/85 px-6"
-      role="presentation"
-      onkeydown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          cancelProbe();
-        }
-      }}
-    >
+    <Dialog label="Probe" onDismiss={cancelProbe}>
       <form
-        class="w-full max-w-md rounded-xl border border-line bg-raised p-5"
         onsubmit={(event) => {
           event.preventDefault();
           void confirmProbe();
@@ -477,43 +464,23 @@
         <label class="mt-4 block text-xs text-faint" for="target-url">HTTPS URL</label>
         <input
           id="target-url"
-          class="mt-1 w-full rounded-md border border-line bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent"
+          class="mt-1 w-full rounded-[var(--radius-control)] border border-line bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent"
           type="url"
           placeholder="https://example.com/"
-          bind:this={targetField}
           bind:value={target}
         />
         <div class="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            class="h-7 rounded-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent"
-            onclick={cancelProbe}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            class="h-7 rounded-md border border-line bg-raised px-3 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-            disabled={!target.trim()}
-          >
-            Probe
-          </button>
+          <Button variant="outline" onclick={cancelProbe}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={!target.trim()}>Probe</Button>
         </div>
       </form>
-    </div>
+    </Dialog>
   {/if}
   {#if rows.length === 0}
     <div class="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
       <h1 class="text-sm font-medium">proxybench</h1>
       <p class="mt-2 text-xs text-faint">Drop a .txt file or a folder of .txt files.</p>
-      <button
-        type="button"
-        class="mt-6 h-7 rounded-md border border-line bg-raised px-3 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-        disabled={locked}
-        onclick={pickFiles}
-      >
-        Open files
-      </button>
+      <Button variant="primary" class="mt-6" disabled={locked} onclick={pickFiles}>Open files</Button>
       {#if busy}
         <p class="mt-4 text-sm text-faint">{working || "Importing…"}</p>
       {/if}
@@ -527,67 +494,46 @@
             {#if busy && !running}
               {working || "Working…"}
             {:else}
-              {rows.length} {rows.length === 1 ? "subnet" : "subnets"}{selectedLabel
-                ? ` · ${selectedLabel}`
-                : ""}
+              {rows.length} {rows.length === 1 ? "subnet" : "subnets"}
             {/if}
           </p>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            type="button"
-            class="h-7 rounded-md border border-line px-3 text-xs {filtering
-              ? 'bg-raised text-text'
-              : 'text-muted hover:text-text'} focus:outline-none focus:ring-1 focus:ring-accent"
+          <Button
+            variant={filtering ? "primary" : "outline"}
+            aria-pressed={filtering}
             onclick={() => (filtering = !filtering)}
           >
             Filter{filterCount > 0 ? ` ${filterCount}` : ""}
-          </button>
-          <button
-            type="button"
-            class="h-7 rounded-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-            disabled={locked}
-            onclick={pickFiles}
-          >
-            Open files
-          </button>
-          <div class="relative flex" data-export-menu>
-            <button
-              type="button"
-              class="h-7 rounded-l-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-              disabled={locked}
-              onclick={() => void exportFiles()}
-            >
-              Export
-            </button>
-            <button
-              bind:this={exportMenuTrigger}
-              type="button"
-              class="h-7 w-7 rounded-r-md border border-l-0 border-line text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-              aria-label="More export options"
-              aria-expanded={exportMenuOpen}
-              aria-haspopup="menu"
-              disabled={locked}
-              onclick={() => (exportMenuOpen = !exportMenuOpen)}
-            >
-              ▾
-            </button>
-            {#if exportMenuOpen}
-              <ExportMenu
-                {locked}
-                onAycd={() => void exportAycd()}
-                onDismiss={closeExportMenu}
-              />
-            {/if}
-          </div>
-          <button
-            type="button"
-            class="h-7 rounded-md border border-line bg-raised px-3 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-            disabled={locked}
-            onclick={openProbe}
-          >
-            {selectedLabel ? "Probe selected" : "Probe all"}
-          </button>
+          </Button>
+          <Button variant="outline" disabled={locked} onclick={pickFiles}>Open files</Button>
+          {#if selectedCidrs.size > 0}
+            <SelectionActions
+              {locked}
+              onExport={() => void exportFiles()}
+              onExportAycd={() => void exportAycd()}
+              onProbe={openProbe}
+            />
+          {:else}
+            <div class="relative flex" data-export-menu>
+              <Button variant="outline" joined="start" disabled={locked} onclick={() => void exportFiles()}>Export</Button>
+              <Button
+                bind:ref={exportMenuTrigger}
+                variant="outline"
+                size="narrowIcon"
+                joined="end"
+                aria-label="More export options"
+                aria-expanded={exportMenuOpen}
+                aria-haspopup="menu"
+                disabled={locked}
+                onclick={() => (exportMenuOpen = !exportMenuOpen)}
+              >▾</Button>
+              {#if exportMenuOpen}
+                <ExportMenu {locked} trigger={exportMenuTrigger} onAycd={() => void exportAycd()} onDismiss={closeExportMenu} />
+              {/if}
+            </div>
+            <Button variant="primary" disabled={locked} onclick={openProbe}>Probe all</Button>
+          {/if}
         </div>
       </header>
       <SubnetTable
@@ -614,7 +560,7 @@
       {#if version}
         <button
           type="button"
-          class="rounded-sm text-xs tabular-nums text-faint hover:text-text hover:underline hover:decoration-dotted hover:underline-offset-2 focus:outline-none focus:ring-1 focus:ring-accent"
+          class="rounded-[var(--radius-control)] px-1 text-xs tabular-nums text-faint hover:text-text hover:underline hover:decoration-dotted hover:underline-offset-2 focus:outline-none focus:ring-1 focus:ring-accent"
           aria-label={`proxybench v${version} — open repository on GitHub`}
           title="https://github.com/Mathious6/proxybench"
           onclick={openRepository}
@@ -655,24 +601,20 @@
       <span class="h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
       <div class="flex shrink-0 items-center gap-2 pl-3">
         <span class="min-w-[112px] text-right text-xs tabular-nums text-faint">{paging.label}</span>
-        <button
-          type="button"
-          class="h-7 w-7 rounded-md border border-line text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+        <Button
+          variant="outline"
+          size="icon"
           aria-label="Previous page"
           disabled={!paging.canPrevious}
           onclick={() => paging.previous()}
-        >
-          ‹
-        </button>
-        <button
-          type="button"
-          class="h-7 w-7 rounded-md border border-line text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+        >‹</Button>
+        <Button
+          variant="outline"
+          size="icon"
           aria-label="Next page"
           disabled={!paging.canNext}
           onclick={() => paging.next()}
-        >
-          ›
-        </button>
+        >›</Button>
       </div>
     {/if}
   </footer>
