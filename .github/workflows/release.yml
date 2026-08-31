@@ -206,6 +206,20 @@ jobs:
           export RELEASE_ID
           sh scripts/validate-release.sh
 
+      - name: generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          test -n "$RELEASE_ID"
+          GENERATED_NOTES=$(gh api -X POST "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+          test -n "$GENERATED_NOTES"
+          PLATFORM_NOTICE='macOS DMGs are Developer ID signed and notarized by Apple. The Windows NSIS setup wizard is unsigned and may trigger SmartScreen; choose More info, then Run anyway.'
+          jq -n --arg notice "$PLATFORM_NOTICE" --arg notes "$GENERATED_NOTES" '{body: ($notice + "\n\n" + $notes)}' |
+            gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" --input -
+
       - name: publish release
         env:
           GH_TOKEN: ${{ github.token }}
