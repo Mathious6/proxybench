@@ -8,6 +8,7 @@ mod last_target;
 mod parse;
 mod probe;
 mod run;
+mod secure_file;
 mod session;
 mod split;
 mod stats;

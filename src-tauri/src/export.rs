@@ -71,32 +71,11 @@ fn write_file(path: &Path, bucket: &StoredBucket) -> Result<(), String> {
         body.push_str(&proxy.source);
         body.push('\n');
     }
-    write_mode(path, body.as_bytes()).map_err(|err| io_error(path, err))
+    crate::secure_file::write(path, body.as_bytes()).map_err(|err| io_error(path, err))
 }
 
 fn io_error(path: &Path, err: std::io::Error) -> String {
     format!("Could not write {} ({})", path.display(), err.kind())
-}
-
-fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(bytes)?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, bytes)
-    }
 }
 
 #[cfg(test)]

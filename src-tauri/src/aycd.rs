@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
@@ -48,9 +47,9 @@ pub fn write(path: &Path, buckets: &[StoredBucket], tags: &Store) -> Result<usiz
             })
         })
         .collect();
-    let bytes = serde_json::to_vec(&proxies).map_err(|err| err.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&proxies).map_err(|err| err.to_string())?;
     let path = json_path(path);
-    write_mode(&path, &bytes).map_err(|err| io_error(&path, err))?;
+    crate::secure_file::write(&path, &bytes).map_err(|err| io_error(&path, err))?;
     Ok(proxies.len())
 }
 
@@ -68,32 +67,13 @@ fn io_error(path: &Path, err: std::io::Error) -> String {
     format!("Could not write {} ({})", path.display(), err.kind())
 }
 
-fn write_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(bytes)
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, bytes)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse::ProxyLine;
     use crate::split::Subnet;
     use crate::tags::Tag;
+    use std::fs;
 
     fn bucket(host: &str, country: Option<&str>, password: &str) -> StoredBucket {
         StoredBucket {
@@ -133,8 +113,9 @@ mod tests {
             bucket("198.51.100.10", None, "pass"),
         ];
         assert_eq!(write(&path, &buckets, &tags).unwrap(), 2);
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.windows(4).any(|window| window == b"\n  {"));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["allIndex"], -1);
         assert_eq!(rows[0]["categoryIndex"], -1);
