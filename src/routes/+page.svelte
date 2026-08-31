@@ -5,7 +5,7 @@
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import type { ImportResult, Progress, RunResult, SubnetRow } from "$lib/import";
   import { emptyMetrics, withMetrics } from "$lib/import";
   import SubnetTable from "$lib/SubnetTable.svelte";
@@ -46,6 +46,8 @@
   });
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const screenshotMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get("screenshot") === "1";
+
   const locked = $derived(busy || running || updating);
   const selectedScope = $derived(selectedCidrs.size > 0 ? [...selectedCidrs] : null);
 
@@ -82,6 +84,10 @@
   }
 
   onMount(() => {
+    if (screenshotMode) {
+      void loadScreenshot();
+      return;
+    }
     let disposed = false;
     let stopDrop = () => {};
     let stopProgress = () => {};
@@ -154,6 +160,16 @@
       }
     };
   });
+
+  async function loadScreenshot() {
+    const { screenshotRows, screenshotSelectedCidrs } = await import("$lib/screenshot");
+    rows = screenshotRows;
+    draft = Object.fromEntries(screenshotRows.map((row) => [row.cidr, ""]));
+    selectedCidrs = new Set(screenshotSelectedCidrs);
+    version = __SCREENSHOT_VERSION__;
+    await tick();
+    document.documentElement.dataset.screenshotReady = "true";
+  }
 
   function applyProgress(progress: Progress) {
     done = progress.done;

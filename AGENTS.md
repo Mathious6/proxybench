@@ -102,6 +102,12 @@ cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D w
 cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
 ```
 
+Run `bun run screenshot` to refresh `docs/assets/screenshot.png` from the real
+page using its credential-free `?screenshot=1` fixture; the command starts and
+stops its own Vite server and browser. The 2240 by 1312 image captures the
+1120 by 656 webview content at 2x; the remaining 32px of the 1120 by 688 Tauri
+window is native title chrome and is not captured.
+
 ## Commits
 
 - [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
