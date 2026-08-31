@@ -98,6 +98,10 @@ mod tests {
         ))
     }
 
+    fn credential() -> String {
+        Uuid::new_v4().to_string()
+    }
+
     #[test]
     fn write_serializes_aycd_schema_with_categories_and_unique_v4_ids() {
         let path = temp_path();
@@ -108,9 +112,11 @@ mod tests {
             vec![Tag::parse("Residential").unwrap()],
         )
         .unwrap();
+        let password = format!("{}:{}", credential(), credential());
+        let other_password = credential();
         let buckets = vec![
-            bucket("192.0.2.10", Some("fr"), "p:ss"),
-            bucket("198.51.100.10", None, "pass"),
+            bucket("192.0.2.10", Some("fr"), &password),
+            bucket("198.51.100.10", None, &other_password),
         ];
         assert_eq!(write(&path, &buckets, &tags).unwrap(), 2);
         let bytes = fs::read(&path).unwrap();
@@ -123,7 +129,7 @@ mod tests {
         assert_eq!(rows[0]["url"], "192.0.2.10");
         assert_eq!(rows[0]["port"], "8080");
         assert_eq!(rows[0]["user"], "user");
-        assert_eq!(rows[0]["pass"], "p:ss");
+        assert_eq!(rows[0]["pass"], password);
         assert_eq!(rows[0]["type"], "HTTP");
         assert_eq!(rows[1]["category"], "XX_198.51.100.0_24_1");
         let first = rows[0]["id"].as_str().unwrap();
@@ -142,7 +148,12 @@ mod tests {
         assert!(expected.to_string_lossy().ends_with(".txt.json"));
         let tags_path = temp_path();
         let tags = Store::load(tags_path.clone()).unwrap();
-        write(&path, &[bucket("192.0.2.10", Some("FR"), "pass")], &tags).unwrap();
+        write(
+            &path,
+            &[bucket("192.0.2.10", Some("FR"), &credential())],
+            &tags,
+        )
+        .unwrap();
         assert!(expected.exists());
         let _ = fs::remove_file(expected);
         let _ = fs::remove_file(tags_path);
@@ -155,7 +166,12 @@ mod tests {
         let path = temp_path();
         let tags_path = temp_path();
         let tags = Store::load(tags_path.clone()).unwrap();
-        write(&path, &[bucket("192.0.2.10", Some("FR"), "pass")], &tags).unwrap();
+        write(
+            &path,
+            &[bucket("192.0.2.10", Some("FR"), &credential())],
+            &tags,
+        )
+        .unwrap();
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
