@@ -97,15 +97,13 @@ impl Session {
         }
     }
 
-    pub fn record_probes(
-        &mut self,
-        at: u64,
-        metrics: &HashMap<String, StoredMetrics>,
-        countries: &HashMap<String, String>,
-    ) {
+    pub fn record_probes(&mut self, at: u64, metrics: &HashMap<String, StoredMetrics>) {
         for (cidr, item) in metrics {
             self.record_probe(cidr, at, Some(item.clone()));
         }
+    }
+
+    pub fn record_countries(&mut self, countries: &HashMap<String, String>) {
         for (cidr, country) in countries {
             let Some(subnet) = Subnet::parse_cidr(cidr) else {
                 continue;
@@ -316,7 +314,7 @@ mod tests {
         let mut metrics = HashMap::new();
         metrics.insert("192.0.2.0/24".into(), sample_metrics(1));
         metrics.insert("203.0.113.0/24".into(), sample_metrics(8));
-        session.record_probes(42, &metrics, &HashMap::new());
+        session.record_probes(42, &metrics);
         let snapshot = session.snapshot();
         let first = snapshot
             .iter()
@@ -331,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn record_probes_refreshes_valid_countries_and_keeps_missing_ones() {
+    fn record_countries_refreshes_valid_values_and_keeps_missing_ones() {
         let mut session = Session::new();
         let mut initial = HashMap::new();
         initial.insert("192.0.2.0/24".into(), "FR".into());
@@ -340,12 +338,9 @@ mod tests {
             by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
             &initial,
         );
-        let mut metrics = HashMap::new();
-        metrics.insert("192.0.2.0/24".into(), sample_metrics(1));
-        metrics.insert("198.51.100.0/24".into(), sample_metrics(1));
         let mut countries = HashMap::new();
         countries.insert("192.0.2.0/24".into(), "US".into());
-        session.record_probes(42, &metrics, &countries);
+        session.record_countries(&countries);
         let snapshot = session.snapshot();
         assert_eq!(snapshot[0].country.as_deref(), Some("US"));
         assert_eq!(snapshot[1].country.as_deref(), Some("DE"));

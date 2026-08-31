@@ -13,7 +13,7 @@ One window, not resizable. One workflow:
 1. Drop a `.txt` file or a folder of `.txt` files, or Open files
    (`host:port:user:pass` HTTP only).
 2. Table of IPv4 `/24` subnets. Country lookup batches missing imports and
-   refreshes every probed subnet. Tags persist by CIDR.
+   refreshes every probed subnet before speed measurements. Tags persist by CIDR.
    Inventory persists locally; Open files appends. Last probe metrics persist
    until that `/24` gains lines. The last HTTPS target is remembered.
 3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current

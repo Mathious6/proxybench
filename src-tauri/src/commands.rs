@@ -56,13 +56,20 @@ pub async fn start_run(
         .iter()
         .filter_map(|bucket| bucket.proxies.first().map(|proxy| proxy.host))
         .collect();
-    let window = app.clone();
-    let probe = run::probe_session(buckets, target, move |progress: Progress| {
-        let _ = window.emit(PROGRESS_EVENT, progress);
-    });
     let countries = tauri::async_runtime::spawn_blocking(move || crate::country::lookup(&samples));
-    let (finished, countries) = tokio::join!(probe, countries);
-    let countries = countries.map_err(|err| err.to_string())?;
+    let countries = countries.await.map_err(|err| err.to_string())?;
+    if !countries.is_empty() {
+        let mut session = session.0.lock().map_err(|err| err.to_string())?;
+        let mut candidate = session.clone();
+        candidate.record_countries(&countries);
+        inventory.0.save(&candidate.snapshot())?;
+        *session = candidate;
+    }
+    let window = app.clone();
+    let finished = run::probe_session(buckets, target, move |progress: Progress| {
+        let _ = window.emit(PROGRESS_EVENT, progress);
+    })
+    .await;
     let completed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
@@ -74,7 +81,7 @@ pub async fn start_run(
             .iter()
             .map(|(cidr, metrics)| (cidr.clone(), stored_metrics(metrics)))
             .collect();
-        candidate.record_probes(completed_at, &stored, &countries);
+        candidate.record_probes(completed_at, &stored);
         let snapshot = candidate.snapshot();
         inventory.0.save(&snapshot)?;
         *session = candidate;

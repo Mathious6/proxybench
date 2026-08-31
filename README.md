@@ -66,8 +66,8 @@ usually already have it. Windows installers are unsigned.
    data directory.
 3. Rows appear immediately, one per IPv4 `/24`. Country is looked up in
    batches from one listed IP per missing `/24` through
-   [country.is](https://country.is). Each Probe also refreshes the country
-   for every `/24` it covers.
+   [country.is](https://country.is). Each Probe refreshes and saves the country
+   for every `/24` it covers before starting the speed measurements.
 4. Tag subnets if you want. Tags are stored on this computer by CIDR and
    survive the next import. Click a column header to sort. **Filter** sits
     with Open files, Export, and Probe all. The table shows 15 subnets per
