@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, tick, type Snippet } from "svelte";
+  import { tick, type Snippet } from "svelte";
 
   let {
     children,
@@ -33,8 +33,6 @@
       (first ?? root)?.focus();
     });
   });
-
-  onDestroy(restoreFocus);
 
   function moveFocus(event: KeyboardEvent) {
     const items = [...(root?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
