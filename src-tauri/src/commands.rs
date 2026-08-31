@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::aycd;
 use crate::export;
 use crate::import::{self, InventoryStore, TagStore};
 use crate::last_target;
@@ -121,6 +122,24 @@ pub fn export_dir(
     };
     let store = tags.0.lock().map_err(|err| err.to_string())?;
     export::write_dir(std::path::Path::new(&path), &buckets, &store)
+}
+
+#[tauri::command]
+pub fn export_aycd(
+    path: String,
+    cidrs: Option<Vec<String>>,
+    session: State<'_, SessionStore>,
+    tags: State<'_, TagStore>,
+) -> Result<usize, String> {
+    let buckets = {
+        let session = session.0.lock().map_err(|err| err.to_string())?;
+        if session.is_empty() {
+            return Err("Import proxies before exporting.".into());
+        }
+        session.resolve_scope(cidrs)?
+    };
+    let store = tags.0.lock().map_err(|err| err.to_string())?;
+    aycd::write(std::path::Path::new(&path), &buckets, &store)
 }
 
 #[tauri::command]

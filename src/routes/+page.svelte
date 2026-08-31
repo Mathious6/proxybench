@@ -2,13 +2,14 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
   import type { ImportResult, Progress, RunResult, SubnetRow } from "$lib/import";
   import { emptyMetrics, withMetrics } from "$lib/import";
   import SubnetTable from "$lib/SubnetTable.svelte";
+  import ExportMenu from "$lib/ExportMenu.svelte";
   import UpdateControl from "$lib/UpdateControl.svelte";
 
   let rows = $state<SubnetRow[]>([]);
@@ -32,6 +33,8 @@
   let pageReset = $state(0);
   let version = $state("");
   let updating = $state(false);
+  let exportMenuOpen = $state(false);
+  let exportMenuTrigger = $state<HTMLButtonElement | null>(null);
   let paging = $state({
     label: "0 of 0",
     canPrevious: false,
@@ -213,6 +216,57 @@
       working = "";
     }
   }
+
+  async function exportAycd(cidrs: string[] | null = selectedScope) {
+    if (locked || rows.length === 0) {
+      return;
+    }
+    exportMenuOpen = false;
+    let path;
+    try {
+      path = await save({
+        defaultPath: "proxybench-aycd.json",
+        filters: [{ name: "AYCD JSON", extensions: ["json"] }],
+        title: "Export for AYCD",
+      });
+    } catch (error) {
+      showNotice(String(error), true);
+      return;
+    }
+    if (path === null) {
+      return;
+    }
+    busy = true;
+    working = "Exporting…";
+    clearNotice();
+    try {
+      const written = await invoke<number>("export_aycd", { path, cidrs });
+      showNotice(written === 1 ? "Exported 1 proxy for AYCD" : `Exported ${written} proxies for AYCD`, false);
+    } catch (error) {
+      showNotice(String(error), true);
+    } finally {
+      busy = false;
+      working = "";
+    }
+  }
+
+  function closeExportMenu() {
+    exportMenuOpen = false;
+    exportMenuTrigger?.focus();
+  }
+
+  $effect(() => {
+    if (!exportMenuOpen) {
+      return;
+    }
+    function dismiss(event: MouseEvent) {
+      if (!(event.target as Element).closest("[data-export-menu]")) {
+        exportMenuOpen = false;
+      }
+    }
+    window.addEventListener("click", dismiss);
+    return () => window.removeEventListener("click", dismiss);
+  });
 
   async function importPaths(paths: string[]) {
     if (locked || paths.length === 0) {
@@ -497,14 +551,35 @@
           >
             Open files
           </button>
-          <button
-            type="button"
-            class="h-7 rounded-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-            disabled={locked}
-            onclick={() => void exportFiles()}
-          >
-            Export
-          </button>
+          <div class="relative flex" data-export-menu>
+            <button
+              type="button"
+              class="h-7 rounded-l-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+              disabled={locked}
+              onclick={() => void exportFiles()}
+            >
+              Export
+            </button>
+            <button
+              bind:this={exportMenuTrigger}
+              type="button"
+              class="h-7 w-7 rounded-r-md border border-l-0 border-line text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+              aria-label="More export options"
+              aria-expanded={exportMenuOpen}
+              aria-haspopup="menu"
+              disabled={locked}
+              onclick={() => (exportMenuOpen = !exportMenuOpen)}
+            >
+              ▾
+            </button>
+            {#if exportMenuOpen}
+              <ExportMenu
+                {locked}
+                onAycd={() => void exportAycd()}
+                onDismiss={closeExportMenu}
+              />
+            {/if}
+          </div>
           <button
             type="button"
             class="h-7 rounded-md border border-line bg-raised px-3 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
@@ -529,6 +604,7 @@
         onRemoveTag={removeTag}
         onProbeSubnet={probeSubnets}
         onExportSubnet={exportFiles}
+        onExportAycdSubnet={exportAycd}
         onRemoveSubnet={removeSubnet}
       />
     </div>

@@ -39,6 +39,7 @@
     onRemoveTag,
     onProbeSubnet,
     onExportSubnet,
+    onExportAycdSubnet,
     onRemoveSubnet,
   }: {
     rows: SubnetRow[];
@@ -60,6 +61,7 @@
     onRemoveTag: (cidr: string, tag: string) => void;
     onProbeSubnet: (cidrs: string[]) => void;
     onExportSubnet: (cidrs: string[]) => void;
+    onExportAycdSubnet: (cidrs: string[]) => void;
     onRemoveSubnet: (cidr: string) => void;
   } = $props();
 
@@ -538,6 +540,13 @@
       menu = null;
       if (cidr) {
         onExportSubnet(menuScope(cidr));
+      }
+    }}
+    onExportAycd={() => {
+      const cidr = menu?.cidr;
+      menu = null;
+      if (cidr) {
+        onExportAycdSubnet(menuScope(cidr));
       }
     }}
     onRemove={() => {

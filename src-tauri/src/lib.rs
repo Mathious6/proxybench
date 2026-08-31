@@ -1,3 +1,4 @@
+mod aycd;
 mod commands;
 mod country;
 mod export;
@@ -42,6 +43,7 @@ pub fn run() {
             commands::last_target,
             commands::start_run,
             commands::export_dir,
+            commands::export_aycd,
             commands::session_rows,
             commands::remove_subnet
         ])

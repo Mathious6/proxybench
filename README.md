@@ -89,6 +89,8 @@ usually already have it. Windows installers are unsigned.
    `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Example:
    `isp-mobile_FR_192.0.2.0_24_42.txt`. No tags means the filename starts
    with the country code. No country means `XX`.
+   The adjacent export menu also offers **Export for AYCD (.json)**, which writes
+   one categorized JSON file for the same scope.
 
 Run a probe once, then pause. Back-to-back runs saturate your own uplink
 and inflate every subnet.

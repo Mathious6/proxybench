@@ -2811,6 +2811,7 @@ dependencies = [
  "tokio-rustls",
  "ureq",
  "url",
+ "uuid",
  "webpki-roots 1.0.9",
 ]
 
