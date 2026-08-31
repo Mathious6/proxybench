@@ -320,12 +320,6 @@
     rangeAnchor = cidr;
   }
 
-  function preventRangeTextSelection(event: MouseEvent) {
-    if (event.shiftKey && !isInteractive(event.target)) {
-      event.preventDefault();
-    }
-  }
-
   function isInteractive(target: EventTarget | null): boolean {
     return target instanceof Element && Boolean(target.closest("button, input, select, textarea, a"));
   }
@@ -491,7 +485,6 @@
             ? 'bg-accent/10 shadow-[inset_3px_0_0_var(--color-accent)] hover:bg-accent/15'
             : 'hover:bg-raised'}"
           aria-selected={selectedCidrs.has(row.original.cidr)}
-          onmousedown={preventRangeTextSelection}
           onclick={(event) => selectRow(event, row.original.cidr)}
           oncontextmenu={(event) => openMenu(event, row.original.cidr)}
         >
