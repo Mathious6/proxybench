@@ -201,7 +201,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.draft == true and .name == \"proxybench $TAG\") | .id" | head -n 1)
           test -n "$RELEASE_ID"
           export RELEASE_ID
           sh scripts/validate-release.sh
@@ -212,7 +212,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.draft == true and .name == \"proxybench $TAG\") | .id" | head -n 1)
           test -n "$RELEASE_ID"
           GENERATED_NOTES=$(gh api -X POST "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body)
           test -n "$GENERATED_NOTES"
@@ -226,6 +226,6 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" | head -n 1)
+          RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq ".[] | select(.draft == true and .name == \"proxybench $TAG\") | .id" | head -n 1)
           test -n "$RELEASE_ID"
-          gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" -F draft=false
+          gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" -F tag_name="$TAG" -F draft=false
