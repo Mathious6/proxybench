@@ -1,6 +1,7 @@
 mod aycd;
 mod commands;
 mod country;
+mod dns;
 mod export;
 mod import;
 mod inventory;

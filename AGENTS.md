@@ -6,6 +6,14 @@ measures Connect + TTFB per subnet.
 `README.md` is what and why for people installing the app. This file is how
 to work here.
 
+## Privacy
+
+Public trackers, pull requests, commit messages, tests, release notes, and
+docs must never contain infrastructure details (internal IPs, resolver
+addresses, VPN or network topology) or account data (subnet lists,
+credentials). Describe failures generically — "the VPN resolver", "a stuck
+subnet" — never the specific values.
+
 ## Product
 
 One window, not resizable. One workflow:
