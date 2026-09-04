@@ -71,7 +71,7 @@ usually already have it. Windows installers are unsigned.
    lookup fails, **Refresh countries** re-runs the lookup and saves the result.
 4. Tag subnets if you want. Tags are stored on this computer by CIDR and
    survive the next import. Click a column header to sort. **Filter** sits
-    with Open files, Export, and Probe all. The table shows 15 subnets per
+    with Open files, Refresh countries, Export, and Probe all. The table shows 15 subnets per
     page. Click a row to select it; Command-click on macOS or Ctrl-click on
     Windows toggles rows, and Shift-click selects the sorted and filtered
     range across pages; add Command/Ctrl to extend that range. Command/Ctrl-A
