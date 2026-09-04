@@ -14,7 +14,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 const ATTEMPTS: usize = 3;
 const ROUNDS: usize = 2;
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct Lookup {
     ip: String,
     country: Option<String>,
@@ -269,7 +269,10 @@ mod tests {
         });
         assert_eq!(bulk_calls, ATTEMPTS + 1);
         assert_eq!(single_calls, 1);
-        assert_eq!(countries.get("192.0.2.0/24"), Some(&"DE".into()));
+        assert_eq!(
+            countries.get(&Subnet::from_host(requested).cidr()),
+            Some(&"DE".into())
+        );
         assert_eq!(countries.get("198.51.100.0/24"), Some(&"DE".into()));
     }
 
@@ -283,6 +286,19 @@ mod tests {
         });
         assert_eq!(calls, ATTEMPTS * ROUNDS);
         assert!(countries.is_empty());
+    }
+
+    #[test]
+    #[ignore = "hits the live api.country.is service"]
+    fn lookup_resolves_live_subnets() {
+        let ips: Vec<Ipv4Addr> = ["51.146.191.0", "64.49.57.0", "43.251.2.0"]
+            .iter()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        let countries = lookup(&ips);
+        assert!(countries.contains_key("51.146.191.0/24"));
+        assert!(countries.contains_key("64.49.57.0/24"));
+        assert!(countries.contains_key("43.251.2.0/24"));
     }
 
     #[test]
