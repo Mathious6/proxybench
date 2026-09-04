@@ -246,6 +246,12 @@
   });
 
   $effect(() => {
+    if (selectedCidrs.size === 0) {
+      rangeAnchor = null;
+    }
+  });
+
+  $effect(() => {
     const pageCount = Math.max(1, table.getPageCount());
     if (pagination.pageIndex >= pageCount) {
       table.setPageIndex(pageCount - 1);
@@ -284,12 +290,53 @@
     return () => window.removeEventListener("keydown", selectByKeyboard);
   });
 
-  let menu = $state<{ cidr: string; x: number; y: number } | null>(null);
+  let menu = $state<{ cidr: string; x: number; y: number; trigger: HTMLElement | null } | null>(null);
   let rangeAnchor = $state<string | null>(null);
 
   function openMenu(event: MouseEvent, cidr: string) {
     event.preventDefault();
-    menu = { cidr, x: event.clientX, y: event.clientY };
+    menu = { cidr, x: event.clientX, y: event.clientY, trigger: event.currentTarget as HTMLElement };
+  }
+
+  function selectRowByKeyboard(event: KeyboardEvent, cidr: string) {
+    if (isInteractive(event.target)) {
+      return;
+    }
+    if (event.key !== "Enter" && event.key !== " ") {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault();
+        const trigger = event.currentTarget as HTMLElement;
+        const bounds = trigger.getBoundingClientRect();
+        menu = { cidr, x: bounds.left + Math.min(24, bounds.width / 2), y: bounds.top + Math.min(24, bounds.height / 2), trigger };
+      }
+      return;
+    }
+    event.preventDefault();
+    const modifier = event.metaKey || event.ctrlKey;
+    if (event.shiftKey && rangeAnchor) {
+      const start = orderedRows.findIndex((row) => row.original.cidr === rangeAnchor);
+      const end = orderedRows.findIndex((row) => row.original.cidr === cidr);
+      if (start >= 0 && end >= 0) {
+        const range = orderedRows
+          .slice(Math.min(start, end), Math.max(start, end) + 1)
+          .map((row) => row.original.cidr);
+        onSelectionChange(modifier ? new Set([...selectedCidrs, ...range]) : new Set(range));
+        return;
+      }
+    }
+    const next = new Set(selectedCidrs);
+    if (modifier || selectedCidrs.has(cidr)) {
+      if (next.has(cidr)) {
+        next.delete(cidr);
+      } else {
+        next.add(cidr);
+      }
+    } else {
+      next.clear();
+      next.add(cidr);
+    }
+    onSelectionChange(next);
+    rangeAnchor = cidr;
   }
 
   function selectRow(event: MouseEvent, cidr: string) {
@@ -459,12 +506,13 @@
                     <div class="flex h-8 items-center">
                       {#if header.column.getCanFilter()}
                         <input
-                          class="block h-6 w-full rounded-md bg-raised px-1 text-xs font-normal text-text focus:outline-none focus:ring-1 focus:ring-accent {numericIds.has(
+                          class="block h-6 w-full rounded-[var(--radius-control)] border border-transparent bg-raised px-1 text-xs font-normal text-text focus:border-line focus:outline-none focus:ring-1 focus:ring-accent {numericIds.has(
                             header.column.id,
                           )
                             ? 'text-right'
                             : ''}"
                           value={String(header.column.getFilterValue() ?? "")}
+                          aria-label={`Filter ${String(header.column.columnDef.header)}`}
                           oninput={(event) => {
                             header.column.setFilterValue(event.currentTarget.value);
                             table.setPageIndex(0);
@@ -485,10 +533,12 @@
         <tr
           class="group h-8 border-t border-line {selectedCidrs.has(row.original.cidr)
             ? 'bg-accent/10 shadow-[inset_3px_0_0_var(--color-accent)] hover:bg-accent/15'
-            : 'hover:bg-raised'}"
+          : 'hover:bg-raised/80'} focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+          tabindex="0"
           aria-selected={selectedCidrs.has(row.original.cidr)}
           onclick={(event) => selectRow(event, row.original.cidr)}
           oncontextmenu={(event) => openMenu(event, row.original.cidr)}
+          onkeydown={(event) => selectRowByKeyboard(event, row.original.cidr)}
         >
           {#each row.getAllCells() as cell (cell.id)}
             <td
@@ -527,6 +577,7 @@
   <RowMenu
     x={menu.x}
     y={menu.y}
+    trigger={menu.trigger}
     {locked}
     onProbe={() => {
       const cidr = menu?.cidr;

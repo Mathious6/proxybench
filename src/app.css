@@ -1,15 +1,18 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #131010;
-  --color-raised: #1a1616;
-  --color-line: #2a2424;
-  --color-text: #f1ecec;
-  --color-muted: #b7b1b1;
-  --color-faint: #7c7575;
-  --color-accent: #89b5ff;
+  --color-bg: #111213;
+  --color-raised: #191a1c;
+  --color-line: #2b2d30;
+  --color-text: #f1f1ee;
+  --color-muted: #b6b7b8;
+  --color-faint: #92959a;
+  --color-accent: #78a9ff;
   --color-good: #8ec07c;
   --color-bad: #e0866b;
+  --radius-control: 6px;
+  --radius-surface: 10px;
+  --ease-ui: 140ms ease;
 }
 
 html,
@@ -19,6 +22,7 @@ body {
   overflow: hidden;
   background: var(--color-bg);
   color: var(--color-text);
+  font-family: "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
 }
 
 table {
@@ -32,4 +36,14 @@ table {
 
 .chip-strip::-webkit-scrollbar {
   display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  input,
+  [role="menu"],
+  [role="dialog"] {
+    transition: color var(--ease-ui), background-color var(--ease-ui), border-color var(--ease-ui),
+      box-shadow var(--ease-ui), opacity var(--ease-ui);
+  }
 }
