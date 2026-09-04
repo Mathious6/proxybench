@@ -97,6 +97,7 @@
     let disposed = false;
     let stopDrop = () => {};
     let stopProgress = () => {};
+    let stopCountries = () => {};
     void getCurrentWebview()
       .onDragDropEvent(async (event) => {
         if (event.payload.type === "enter" || event.payload.type === "over") {
@@ -133,6 +134,22 @@
       .catch((error) => {
         showNotice(String(error), true);
       });
+    void listen<Record<string, string>>("countries-refreshed", (event) => {
+      rows = rows.map((row) => {
+        const country = event.payload[row.cidr];
+        return country ? { ...row, country } : row;
+      });
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        stopCountries = unlisten;
+      })
+      .catch((error) => {
+        showNotice(String(error), true);
+      });
     void getVersion()
       .then((value) => {
         version = value;
@@ -160,6 +177,7 @@
       disposed = true;
       stopDrop();
       stopProgress();
+      stopCountries();
       if (noticeTimer) {
         clearTimeout(noticeTimer);
         noticeTimer = null;

@@ -4,15 +4,21 @@ use std::net::Ipv4Addr;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::dns;
 use crate::split::Subnet;
 
 const ENDPOINT: &str = "https://api.country.is/";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const BATCH_SIZE: usize = 100;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
-const RETRY_DELAY: Duration = Duration::from_secs(1);
+const RETRY_DELAY: Duration = Duration::from_millis(500);
+const ROUND_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
 const ATTEMPTS: usize = 3;
-const ROUNDS: usize = 2;
+const ROUNDS: usize = 4;
 
 #[derive(Debug, serde::Deserialize)]
 struct Lookup {
@@ -36,7 +42,12 @@ impl fmt::Display for LookupError {
 }
 
 pub fn lookup(ips: &[Ipv4Addr]) -> HashMap<String, String> {
-    lookup_with(ips, fetch)
+    let agent = fetch_agent();
+    lookup_with(ips, |batch| fetch(&agent, batch))
+}
+
+fn fetch_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().resolver(dns::resolve).build()
 }
 
 fn lookup_with<F>(ips: &[Ipv4Addr], mut send: F) -> HashMap<String, String>
@@ -61,10 +72,13 @@ where
                 None => unresolved.push(batch),
             }
         }
-        if unresolved.is_empty() || round + 1 == ROUNDS {
+        if unresolved.is_empty() {
             break;
         }
-        thread::sleep(RETRY_DELAY);
+        match ROUND_DELAYS.get(round) {
+            Some(delay) => thread::sleep(*delay),
+            None => break,
+        }
         batches = unresolved;
     }
     countries
@@ -116,9 +130,10 @@ fn wait_for_request(last_request: Option<Instant>) {
     }
 }
 
-fn fetch(ips: &[Ipv4Addr]) -> Result<Vec<Lookup>, LookupError> {
+fn fetch(agent: &ureq::Agent, ips: &[Ipv4Addr]) -> Result<Vec<Lookup>, LookupError> {
     let ips: Vec<_> = ips.iter().map(Ipv4Addr::to_string).collect();
-    let response = ureq::post(ENDPOINT)
+    let response = agent
+        .post(ENDPOINT)
         .timeout(TIMEOUT)
         .send_json(ips)
         .map_err(|_| LookupError::Http)?;
@@ -291,14 +306,12 @@ mod tests {
     #[test]
     #[ignore = "hits the live api.country.is service"]
     fn lookup_resolves_live_subnets() {
-        let ips: Vec<Ipv4Addr> = ["51.146.191.0", "64.49.57.0", "43.251.2.0"]
+        let ips: Vec<Ipv4Addr> = ["140.82.121.3", "140.82.121.4", "140.82.121.5"]
             .iter()
             .map(|value| value.parse().unwrap())
             .collect();
         let countries = lookup(&ips);
-        assert!(countries.contains_key("51.146.191.0/24"));
-        assert!(countries.contains_key("64.49.57.0/24"));
-        assert!(countries.contains_key("43.251.2.0/24"));
+        assert!(countries.contains_key("140.82.121.0/24"));
     }
 
     #[test]

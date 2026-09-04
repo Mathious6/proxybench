@@ -14,6 +14,7 @@ use crate::target::Target;
 
 const LAST_TARGET_FILE: &str = "last-target.txt";
 const PROGRESS_EVENT: &str = "run-progress";
+const COUNTRIES_EVENT: &str = "countries-refreshed";
 
 pub struct LastTarget(pub last_target::Store);
 
@@ -65,6 +66,7 @@ pub async fn start_run(
         candidate.record_countries(&countries);
         inventory.0.save(&candidate.snapshot())?;
         *session = candidate;
+        let _ = app.emit(COUNTRIES_EVENT, &countries);
     }
     let window = app.clone();
     let finished = run::probe_session(buckets, target, move |progress: Progress| {
