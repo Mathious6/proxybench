@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::net::Ipv4Addr;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,13 +10,29 @@ const ENDPOINT: &str = "https://api.country.is/";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const BATCH_SIZE: usize = 100;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
-const RETRY_DELAY: Duration = Duration::from_millis(250);
-const ATTEMPTS: usize = 2;
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+const ATTEMPTS: usize = 3;
+const ROUNDS: usize = 2;
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct Lookup {
     ip: String,
     country: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum LookupError {
+    Http,
+    Decode,
+}
+
+impl fmt::Display for LookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LookupError::Http => write!(f, "country lookup request failed"),
+            LookupError::Decode => write!(f, "country lookup response unreadable"),
+        }
+    }
 }
 
 pub fn lookup(ips: &[Ipv4Addr]) -> HashMap<String, String> {
@@ -24,47 +41,70 @@ pub fn lookup(ips: &[Ipv4Addr]) -> HashMap<String, String> {
 
 fn lookup_with<F>(ips: &[Ipv4Addr], mut send: F) -> HashMap<String, String>
 where
-    F: FnMut(&[Ipv4Addr]) -> Result<Vec<Lookup>, ()>,
+    F: FnMut(&[Ipv4Addr]) -> Result<Vec<Lookup>, LookupError>,
 {
-    let ips: Vec<_> = ips
+    let unique: Vec<_> = ips
         .iter()
         .copied()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let requested: HashSet<_> = ips.iter().copied().collect();
+    let requested: HashSet<_> = unique.iter().copied().collect();
     let mut countries = HashMap::new();
+    let mut batches: Vec<&[Ipv4Addr]> = unique.chunks(BATCH_SIZE).collect();
     let mut last_request: Option<Instant> = None;
-
-    for batch in ips.chunks(BATCH_SIZE) {
-        let mut rows = None;
-        for attempt in 0..ATTEMPTS {
-            wait_for_request(last_request);
-            last_request = Some(Instant::now());
-            match send(batch) {
-                Ok(value) => {
-                    rows = Some(value);
-                    break;
-                }
-                Err(()) if attempt + 1 < ATTEMPTS => thread::sleep(RETRY_DELAY),
-                Err(()) => {}
+    for round in 0..ROUNDS {
+        let mut unresolved: Vec<&[Ipv4Addr]> = Vec::new();
+        for batch in batches {
+            match send_with_retries(batch, &mut send, &mut last_request) {
+                Some(rows) => record(&mut countries, &requested, rows),
+                None => unresolved.push(batch),
             }
         }
-        let Some(rows) = rows else {
+        if unresolved.is_empty() || round + 1 == ROUNDS {
+            break;
+        }
+        thread::sleep(RETRY_DELAY);
+        batches = unresolved;
+    }
+    countries
+}
+
+fn send_with_retries<F>(
+    batch: &[Ipv4Addr],
+    send: &mut F,
+    last_request: &mut Option<Instant>,
+) -> Option<Vec<Lookup>>
+where
+    F: FnMut(&[Ipv4Addr]) -> Result<Vec<Lookup>, LookupError>,
+{
+    for attempt in 0..ATTEMPTS {
+        wait_for_request(*last_request);
+        *last_request = Some(Instant::now());
+        match send(batch) {
+            Ok(rows) => return Some(rows),
+            Err(_) if attempt + 1 < ATTEMPTS => thread::sleep(RETRY_DELAY),
+            Err(_) => {}
+        }
+    }
+    None
+}
+
+fn record(
+    countries: &mut HashMap<String, String>,
+    requested: &HashSet<Ipv4Addr>,
+    rows: Vec<Lookup>,
+) {
+    for row in rows {
+        let Ok(ip) = row.ip.parse::<Ipv4Addr>() else {
             continue;
         };
-        for row in rows {
-            let Ok(ip) = row.ip.parse::<Ipv4Addr>() else {
-                continue;
-            };
-            if requested.contains(&ip) {
-                if let Some(country) = normalize(row.country.as_deref()) {
-                    countries.insert(Subnet::from_host(ip).cidr(), country);
-                }
+        if requested.contains(&ip) {
+            if let Some(country) = normalize(row.country.as_deref()) {
+                countries.insert(Subnet::from_host(ip).cidr(), country);
             }
         }
     }
-    countries
 }
 
 fn wait_for_request(last_request: Option<Instant>) {
@@ -76,14 +116,13 @@ fn wait_for_request(last_request: Option<Instant>) {
     }
 }
 
-fn fetch(ips: &[Ipv4Addr]) -> Result<Vec<Lookup>, ()> {
+fn fetch(ips: &[Ipv4Addr]) -> Result<Vec<Lookup>, LookupError> {
     let ips: Vec<_> = ips.iter().map(Ipv4Addr::to_string).collect();
-    ureq::post(ENDPOINT)
+    let response = ureq::post(ENDPOINT)
         .timeout(TIMEOUT)
         .send_json(ips)
-        .map_err(|_| ())?
-        .into_json()
-        .map_err(|_| ())
+        .map_err(|_| LookupError::Http)?;
+    response.into_json().map_err(|_| LookupError::Decode)
 }
 
 fn normalize(value: Option<&str>) -> Option<String> {
@@ -173,7 +212,7 @@ mod tests {
         let countries = lookup_with(&[requested], |_| {
             attempts += 1;
             if attempts == 1 {
-                Err(())
+                Err(LookupError::Http)
             } else {
                 Ok(vec![Lookup {
                     ip: requested.to_string(),
@@ -183,6 +222,83 @@ mod tests {
         });
         assert_eq!(attempts, 2);
         assert_eq!(countries.get("151.242.94.0/24"), Some(&"DE".into()));
+    }
+
+    #[test]
+    fn lookup_retries_unresolved_batches_in_a_later_round() {
+        let requested: Ipv4Addr = "192.0.2.10".parse().unwrap();
+        let mut calls = 0;
+        let countries = lookup_with(&[requested], |_| {
+            calls += 1;
+            if calls <= ATTEMPTS {
+                Err(LookupError::Http)
+            } else {
+                Ok(vec![Lookup {
+                    ip: requested.to_string(),
+                    country: Some("DE".into()),
+                }])
+            }
+        });
+        assert_eq!(calls, ATTEMPTS + 1);
+        assert_eq!(countries.get("192.0.2.0/24"), Some(&"DE".into()));
+    }
+
+    #[test]
+    fn lookup_resends_only_unresolved_batches_in_a_later_round() {
+        let requested: Ipv4Addr = "192.0.2.0".parse().unwrap();
+        let other: Ipv4Addr = "198.51.100.20".parse().unwrap();
+        let mut all: Vec<Ipv4Addr> = (0..100)
+            .map(|offset| Ipv4Addr::new(192, 0, 2, offset))
+            .collect();
+        all.push(other);
+        let mut bulk_calls = 0;
+        let mut single_calls = 0;
+        let countries = lookup_with(&all, |batch| {
+            if batch.len() > 1 {
+                bulk_calls += 1;
+                if bulk_calls <= ATTEMPTS {
+                    return Err(LookupError::Http);
+                }
+            } else {
+                single_calls += 1;
+            }
+            Ok(vec![Lookup {
+                ip: batch[0].to_string(),
+                country: Some("DE".into()),
+            }])
+        });
+        assert_eq!(bulk_calls, ATTEMPTS + 1);
+        assert_eq!(single_calls, 1);
+        assert_eq!(
+            countries.get(&Subnet::from_host(requested).cidr()),
+            Some(&"DE".into())
+        );
+        assert_eq!(countries.get("198.51.100.0/24"), Some(&"DE".into()));
+    }
+
+    #[test]
+    fn lookup_gives_up_after_all_rounds() {
+        let requested: Ipv4Addr = "192.0.2.10".parse().unwrap();
+        let mut calls = 0;
+        let countries = lookup_with(&[requested], |_| {
+            calls += 1;
+            Err::<Vec<Lookup>, LookupError>(LookupError::Http)
+        });
+        assert_eq!(calls, ATTEMPTS * ROUNDS);
+        assert!(countries.is_empty());
+    }
+
+    #[test]
+    #[ignore = "hits the live api.country.is service"]
+    fn lookup_resolves_live_subnets() {
+        let ips: Vec<Ipv4Addr> = ["51.146.191.0", "64.49.57.0", "43.251.2.0"]
+            .iter()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        let countries = lookup(&ips);
+        assert!(countries.contains_key("51.146.191.0/24"));
+        assert!(countries.contains_key("64.49.57.0/24"));
+        assert!(countries.contains_key("43.251.2.0/24"));
     }
 
     #[test]
