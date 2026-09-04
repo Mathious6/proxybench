@@ -47,7 +47,6 @@
   const locked = $derived(busy || running || updating);
   const selectedScope = $derived(selectedCidrs.size > 0 ? [...selectedCidrs] : null);
   const selectedLabel = $derived(selectedCidrs.size > 0 ? `${selectedCidrs.size} selected` : "");
-  const missingCountries = $derived(rows.filter((row) => !row.country).length);
 
   $effect(() => {
     const available = new Set(rows.map((row) => row.cidr));
@@ -416,30 +415,6 @@
     }
   }
 
-  async function refreshCountries() {
-    if (locked || rows.length === 0) {
-      return;
-    }
-    busy = true;
-    working = "Refreshing…";
-    clearNotice();
-    try {
-      const stored = await invoke<SubnetRow[]>("refresh_countries", { cidrs: null });
-      rows = stored;
-      draft = Object.fromEntries(stored.map((row) => [row.cidr, draft[row.cidr] ?? ""]));
-      const missing = stored.filter((row) => !row.country).length;
-      showNotice(
-        missing === 0 ? "Countries refreshed" : `Countries refreshed · ${missing} unknown`,
-        false,
-      );
-    } catch (error) {
-      showNotice(String(error), true);
-    } finally {
-      busy = false;
-      working = "";
-    }
-  }
-
   async function saveTags(cidr: string, tags: string[]) {
     try {
       const stored = await invoke<string[]>("set_tags", { cidr, tags });
@@ -576,16 +551,6 @@
           >
             Open files
           </button>
-          {#if missingCountries > 0}
-            <button
-              type="button"
-              class="h-7 rounded-md border border-line px-3 text-xs text-muted hover:text-text focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
-              disabled={locked}
-              onclick={() => void refreshCountries()}
-            >
-              Refresh countries
-            </button>
-          {/if}
           <div class="relative flex" data-export-menu>
             <button
               type="button"

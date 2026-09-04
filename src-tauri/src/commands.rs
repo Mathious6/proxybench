@@ -113,7 +113,7 @@ pub fn export_dir(
     session: State<'_, SessionStore>,
     tags: State<'_, TagStore>,
 ) -> Result<usize, String> {
-    let buckets = scoped_buckets(&session, cidrs)?;
+    let buckets = export_buckets(&session, cidrs)?;
     let store = tags.0.lock().map_err(|err| err.to_string())?;
     export::write_dir(std::path::Path::new(&path), &buckets, &store)
 }
@@ -125,45 +125,18 @@ pub fn export_aycd(
     session: State<'_, SessionStore>,
     tags: State<'_, TagStore>,
 ) -> Result<usize, String> {
-    let buckets = scoped_buckets(&session, cidrs)?;
+    let buckets = export_buckets(&session, cidrs)?;
     let store = tags.0.lock().map_err(|err| err.to_string())?;
     aycd::write(std::path::Path::new(&path), &buckets, &store)
 }
 
-#[tauri::command]
-pub async fn refresh_countries(
-    cidrs: Option<Vec<String>>,
-    session: State<'_, SessionStore>,
-    inventory: State<'_, InventoryStore>,
-    tags: State<'_, TagStore>,
-) -> Result<Vec<import::SubnetRow>, String> {
-    let buckets = scoped_buckets(&session, cidrs)?;
-    let samples: Vec<_> = buckets
-        .iter()
-        .filter_map(|bucket| bucket.proxies.first().map(|proxy| proxy.host))
-        .collect();
-    let countries = tauri::async_runtime::spawn_blocking(move || crate::country::lookup(&samples));
-    let countries = countries.await.map_err(|err| err.to_string())?;
-    if !countries.is_empty() {
-        let mut session = session.0.lock().map_err(|err| err.to_string())?;
-        let mut candidate = session.clone();
-        candidate.record_countries(&countries);
-        let snapshot = candidate.snapshot();
-        inventory.0.save(&snapshot)?;
-        *session = candidate;
-    }
-    let session = session.0.lock().map_err(|err| err.to_string())?;
-    let tags = tags.0.lock().map_err(|err| err.to_string())?;
-    Ok(import::rows_from(&session.snapshot(), &tags))
-}
-
-fn scoped_buckets(
+fn export_buckets(
     session: &SessionStore,
     cidrs: Option<Vec<String>>,
 ) -> Result<Vec<StoredBucket>, String> {
     let session = session.0.lock().map_err(|err| err.to_string())?;
     if session.is_empty() {
-        return Err("Import proxies first.".into());
+        return Err("Import proxies before exporting.".into());
     }
     session.resolve_scope(cidrs)
 }

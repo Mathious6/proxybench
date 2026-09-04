@@ -13,9 +13,7 @@ One window, not resizable. One workflow:
 1. Drop a `.txt` file or a folder of `.txt` files, or Open files
    (`host:port:user:pass` HTTP only).
 2. Table of IPv4 `/24` subnets. Country lookup batches missing imports and
-   refreshes every probed subnet before speed measurements. Refresh countries
-   re-runs the lookup for the stored subnets and saves the result. Tags persist
-   by CIDR.
+   refreshes every probed subnet before speed measurements. Tags persist by CIDR.
    Inventory persists locally; Open files appends. Last probe metrics persist
    until that `/24` gains lines. The last HTTPS target is remembered.
 3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current
@@ -26,7 +24,7 @@ One window, not resizable. One workflow:
 4. Export `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Untagged files start with the
    country code. No country → `XX`. The Export menu also writes one AYCD JSON
    file for the same scope, categorized by the TXT filename stem.
-5. Filter sits with Open files, Refresh countries, Export, and Probe all. Toolbar Probe and
+5. Filter sits with Open files, Export, and Probe all. Toolbar Probe and
    Export act on selected rows when present. Probe progress and the version
    sit in the bottom bar. 15 subnets per page. Right-click a selected row to
    Probe or Export the selection; otherwise those actions apply to that row.

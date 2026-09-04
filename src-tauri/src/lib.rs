@@ -43,7 +43,6 @@ pub fn run() {
             import::set_tags,
             commands::last_target,
             commands::start_run,
-            commands::refresh_countries,
             commands::export_dir,
             commands::export_aycd,
             commands::session_rows,
