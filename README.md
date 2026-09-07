@@ -84,11 +84,13 @@ usually already have it. Windows installers are unsigned.
    table fills with OK, Connect, TTFB (p50 and p95), and Last probe. Those
    stats survive a restart. Adding proxies to a `/24` drops its last probe.
    Failures are omitted from those timings.
-6. **Export** writes one `.txt` per selected subnet, or every subnet when none
+6. **Export** writes one `.txt` for a single subnet, or every subnet when none
    is selected, source lines verbatim:
    `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Example:
    `isp-mobile_FR_192.0.2.0_24_42.txt`. No tags means the filename starts
-   with the country code. No country means `XX`.
+   with the country code. No country means `XX`. Exporting several subnets
+   at once produces a single `.zip` holding every subnet's `.txt` plus an
+   `ALL_<qty>.txt` with all proxy lines for easy bulk import.
    The adjacent export menu also offers **Export for AYCD (.json)**, which writes
    one categorized JSON file for the same scope.
 

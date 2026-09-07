@@ -1,3 +1,4 @@
+mod archive;
 mod aycd;
 mod commands;
 mod country;

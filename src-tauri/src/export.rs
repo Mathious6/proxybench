@@ -1,4 +1,5 @@
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
 use crate::session::StoredBucket;
@@ -10,8 +11,7 @@ pub fn filename(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> S
 
 pub fn category(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> String {
     let country = country
-        .filter(|code| code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()))
-        .map(|code| code.to_ascii_uppercase())
+        .and_then(valid_country)
         .unwrap_or_else(|| "XX".into());
     let ip = bucket.subnet.network();
     let qty = bucket.proxies.len();
@@ -19,6 +19,11 @@ pub fn category(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> S
         Some(tags) => format!("{tags}_{country}_{ip}_24_{qty}"),
         None => format!("{country}_{ip}_24_{qty}"),
     }
+}
+
+fn valid_country(code: &str) -> Option<String> {
+    (code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()))
+        .then(|| code.to_ascii_uppercase())
 }
 
 fn tag_stem(tags: &[Tag]) -> Option<String> {
@@ -49,29 +54,123 @@ fn sanitize(value: &str) -> String {
     out
 }
 
+struct Bundle {
+    filename: String,
+    entries: Vec<(String, String)>,
+}
+
+fn bundle(buckets: &[StoredBucket], tags: &Store) -> Result<Bundle, String> {
+    if buckets.is_empty() {
+        return Err("Import proxies before exporting.".into());
+    }
+    let total: usize = buckets.iter().map(|bucket| bucket.proxies.len()).sum();
+    let mut entries: Vec<(String, String)> = buckets
+        .iter()
+        .map(|bucket| {
+            (
+                filename(
+                    &tags.get(&bucket.subnet.cidr()),
+                    bucket.country.as_deref(),
+                    bucket,
+                ),
+                body(bucket),
+            )
+        })
+        .collect();
+    entries.push((
+        format!("ALL_{total}.txt"),
+        entries.iter().map(|(_, text)| text.as_str()).collect(),
+    ));
+    Ok(Bundle {
+        filename: bundle_filename(buckets, tags, total),
+        entries,
+    })
+}
+
+fn bundle_filename(buckets: &[StoredBucket], tags: &Store, total: usize) -> String {
+    format!(
+        "{}_{}subnets_{}proxies_{}.zip",
+        bundle_prefix(buckets, tags),
+        buckets.len(),
+        total,
+        fingerprint(buckets)
+    )
+}
+
+fn fingerprint(buckets: &[StoredBucket]) -> String {
+    let mut cidrs: Vec<String> = buckets.iter().map(|b| b.subnet.cidr()).collect();
+    cidrs.sort();
+    let mut hasher = DefaultHasher::new();
+    cidrs.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn bundle_prefix(buckets: &[StoredBucket], tags: &Store) -> String {
+    if let Some(stem) = uniform_tag_stem(buckets, tags) {
+        return stem;
+    }
+    if let Some(code) = uniform_country(buckets) {
+        return code;
+    }
+    "MIXED".into()
+}
+
+fn uniform_tag_stem(buckets: &[StoredBucket], tags: &Store) -> Option<String> {
+    let mut stems = buckets
+        .iter()
+        .map(|bucket| tag_stem(&tags.get(&bucket.subnet.cidr())));
+    let stem = stems.next()?.as_ref()?.clone();
+    stems
+        .all(|other| other.as_deref() == Some(stem.as_str()))
+        .then_some(stem)
+}
+
+fn uniform_country(buckets: &[StoredBucket]) -> Option<String> {
+    let mut codes = buckets
+        .iter()
+        .map(|bucket| bucket.country.as_deref().and_then(valid_country));
+    let first = codes.next()?;
+    if !codes.all(|code| code == first) {
+        return None;
+    }
+    Some(first.unwrap_or_else(|| "XX".into()))
+}
+
 pub fn write_dir(dir: &Path, buckets: &[StoredBucket], tags: &Store) -> Result<usize, String> {
     if buckets.is_empty() {
         return Err("Import proxies before exporting.".into());
     }
     fs::create_dir_all(dir).map_err(|err| io_error(dir, err))?;
-    let mut written = 0;
-    for bucket in buckets {
-        let cidr = bucket.subnet.cidr();
-        let name = filename(&tags.get(&cidr), bucket.country.as_deref(), bucket);
-        let path = dir.join(&name);
-        write_file(&path, bucket)?;
-        written += 1;
+    match buckets {
+        [single] => {
+            let path = dir.join(filename(
+                &tags.get(&single.subnet.cidr()),
+                single.country.as_deref(),
+                single,
+            ));
+            write_text(&path, &body(single))?;
+            Ok(1)
+        }
+        many => {
+            let bundle = bundle(many, tags)?;
+            let path = dir.join(&bundle.filename);
+            crate::archive::write_zip(&path, &bundle.entries)?;
+            Ok(1)
+        }
     }
-    Ok(written)
 }
 
-fn write_file(path: &Path, bucket: &StoredBucket) -> Result<(), String> {
-    let mut body = String::new();
+fn body(bucket: &StoredBucket) -> String {
+    let mut text = String::new();
     for proxy in &bucket.proxies {
-        body.push_str(&proxy.source);
-        body.push('\n');
+        text.push_str(&proxy.source);
+        text.push('\n');
     }
-    crate::secure_file::write(path, body.as_bytes()).map_err(|err| io_error(path, err))
+    text
+}
+
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    crate::secure_file::write(path, text.as_bytes()).map_err(|err| io_error(path, err))
 }
 
 fn io_error(path: &Path, err: std::io::Error) -> String {
@@ -81,7 +180,9 @@ fn io_error(path: &Path, err: std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Read};
     use std::path::PathBuf;
+    use zip::ZipArchive;
 
     use crate::parse::ProxyLine;
     use crate::split::Subnet;
@@ -228,6 +329,150 @@ mod tests {
         write_dir(&out, &[bucket("192.0.2.10", 1)], &store).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_names_uniform_tagged_scopes_after_the_shared_tag_stem() {
+        let dir = temp_dir();
+        let mut store = Store::load(dir.join("tags.json")).unwrap();
+        store.set("192.0.2.0/24".into(), tags(&["isp"])).unwrap();
+        store.set("198.51.100.0/24".into(), tags(&["isp"])).unwrap();
+        let bundle = bundle(
+            &[bucket("192.0.2.10", 2), bucket("198.51.100.2", 3)],
+            &store,
+        )
+        .unwrap();
+        assert!(bundle.filename.starts_with("isp_2subnets_5proxies_"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_names_partially_known_countries_as_mixed() {
+        let dir = temp_dir();
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let mut first = bucket("192.0.2.10", 1);
+        first.country = Some("FR".into());
+        let mut second = bucket("198.51.100.2", 1);
+        second.country = None;
+        let bundle = bundle(&[first, second], &store).unwrap();
+        assert!(bundle.filename.starts_with("MIXED_2subnets_2proxies_"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_names_country_less_scopes_xx() {
+        let dir = temp_dir();
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let mut first = bucket("192.0.2.10", 1);
+        first.country = None;
+        let mut second = bucket("198.51.100.2", 2);
+        second.country = None;
+        let bundle = bundle(&[first, second], &store).unwrap();
+        assert!(bundle.filename.starts_with("XX_2subnets_3proxies_"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_collects_per_subnet_entries_plus_the_combined_import_list() {
+        let dir = temp_dir();
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let bundle = bundle(
+            &[bucket("192.0.2.10", 2), bucket("198.51.100.2", 1)],
+            &store,
+        )
+        .unwrap();
+        assert_eq!(bundle.entries.len(), 3);
+        assert_eq!(
+            bundle.entries[0],
+            (
+                "FR_192.0.2.0_24_2.txt".into(),
+                "192.0.2.10:8080:user:0\n192.0.2.10:8080:user:1\n".into()
+            )
+        );
+        assert_eq!(
+            bundle.entries[1],
+            (
+                "FR_198.51.100.0_24_1.txt".into(),
+                "198.51.100.2:8080:user:0\n".into()
+            )
+        );
+        assert_eq!(bundle.entries[2].0, "ALL_3.txt");
+        assert_eq!(
+            bundle.entries[2].1,
+            format!("{}{}", bundle.entries[0].1, bundle.entries[1].1)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_filenames_distinguish_distinct_scopes_sharing_the_same_aggregates() {
+        let dir = temp_dir();
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let first = bundle(
+            &[bucket("192.0.2.10", 3), bucket("198.51.100.2", 3)],
+            &store,
+        )
+        .unwrap();
+        let second = bundle(
+            &[bucket("192.0.2.10", 1), bucket("203.0.113.10", 5)],
+            &store,
+        )
+        .unwrap();
+        assert!(first.filename.starts_with("FR_2subnets_6proxies_"));
+        assert!(second.filename.starts_with("FR_2subnets_6proxies_"));
+        assert_ne!(first.filename, second.filename);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_filenames_follow_the_scope_not_the_member_content() {
+        let dir = temp_dir();
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let first = bundle(
+            &[bucket("192.0.2.10", 2), bucket("198.51.100.2", 1)],
+            &store,
+        )
+        .unwrap();
+        let second = bundle(
+            &[bucket("192.0.2.10", 3), bucket("198.51.100.2", 0)],
+            &store,
+        )
+        .unwrap();
+        assert_eq!(first.filename, second.filename);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_dir_writes_a_single_bundle_zip_when_several_buckets_are_selected() {
+        let dir = temp_dir();
+        let out = dir.join("out");
+        let store = Store::load(dir.join("tags.json")).unwrap();
+        let written = write_dir(
+            &out,
+            &[bucket("192.0.2.10", 1), bucket("198.51.100.2", 2)],
+            &store,
+        )
+        .unwrap();
+        assert_eq!(written, 1);
+        let produced: Vec<String> = fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(produced.len(), 1);
+        let zip_name = produced.first().unwrap();
+        assert!(zip_name.starts_with("FR_2subnets_3proxies_"));
+        assert!(zip_name.ends_with(".zip"));
+        let bytes = fs::read(out.join(zip_name)).unwrap();
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.len(), 3);
+        let mut combined = archive.by_name("ALL_3.txt").unwrap();
+        let mut body = String::new();
+        combined.read_to_string(&mut body).unwrap();
+        assert_eq!(
+            body,
+            "192.0.2.10:8080:user:0\n198.51.100.2:8080:user:0\n198.51.100.2:8080:user:1\n"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
