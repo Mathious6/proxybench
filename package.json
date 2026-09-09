@@ -19,7 +19,7 @@
     "@tauri-apps/plugin-dialog": "~2",
     "@tauri-apps/plugin-opener": "2",
     "@tauri-apps/plugin-process": "2",
-    "@tauri-apps/plugin-updater": "2.10.1"
+    "@tauri-apps/plugin-updater": "2.11.0"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",
@@ -27,8 +27,8 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
-    "@types/node": "^26.4.0",
-    "playwright": "1.62.1",
+    "@types/node": "^26.4.1",
+    "playwright": "1.63.0",
     "svelte": "^5.57.0",
     "svelte-check": "^4.0.0",
     "tailwindcss": "^4.3.3",
