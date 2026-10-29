@@ -1,471 +1,406 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Mutex;
 
-use crate::parse::{self, ProxyLine};
-use crate::session::{self, StoredBucket, StoredMetrics, StoredProbe};
+use crate::parse::ProxyLine;
 use crate::split::{Bucket, Subnet};
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct Disk {
-    buckets: Vec<DiskBucket>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredMetrics {
+    pub ok: usize,
+    pub connect_p50: Option<f64>,
+    pub connect_p95: Option<f64>,
+    pub ttfb_p50: Option<f64>,
+    pub ttfb_p95: Option<f64>,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct DiskBucket {
-    cidr: String,
-    country: Option<String>,
-    proxies: Vec<String>,
-    #[serde(default)]
-    last_run_at: Option<u64>,
-    #[serde(default)]
-    metrics: Option<DiskMetrics>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredProbe {
+    pub at: u64,
+    pub metrics: Option<StoredMetrics>,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct DiskMetrics {
-    ok: usize,
-    connect_p50: Option<f64>,
-    connect_p95: Option<f64>,
-    ttfb_p50: Option<f64>,
-    ttfb_p95: Option<f64>,
+#[derive(Clone)]
+pub struct StoredBucket {
+    pub subnet: Subnet,
+    pub proxies: Vec<ProxyLine>,
+    pub country: Option<String>,
+    pub last_probe: Option<StoredProbe>,
 }
 
-pub struct Store {
-    path: PathBuf,
+pub struct Merge {
+    pub grown: Vec<String>,
 }
 
-impl Store {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
+#[derive(Clone)]
+pub struct Session {
+    buckets: BTreeMap<Subnet, StoredBucket>,
+}
 
-    pub fn load(&self) -> Result<Vec<StoredBucket>, String> {
-        match fs::read(&self.path) {
-            Ok(bytes) => decode(&bytes),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(err) => Err(err.to_string()),
+impl Session {
+    pub fn new() -> Self {
+        Self {
+            buckets: BTreeMap::new(),
         }
     }
 
-    pub fn save(&self, buckets: &[StoredBucket]) -> Result<(), String> {
-        let disk = Disk {
-            buckets: buckets.iter().map(to_disk).collect(),
-        };
-        let bytes = serde_json::to_vec_pretty(&disk).map_err(json_error)?;
-        write_atomic(&self.path, &bytes)
-    }
-}
-
-fn to_disk(bucket: &StoredBucket) -> DiskBucket {
-    DiskBucket {
-        cidr: bucket.subnet.cidr(),
-        country: bucket.country.clone(),
-        proxies: bucket
-            .proxies
-            .iter()
-            .map(|proxy| proxy.source.clone())
-            .collect(),
-        last_run_at: bucket.last_probe.as_ref().map(|probe| probe.at),
-        metrics: bucket
-            .last_probe
-            .as_ref()
-            .and_then(|probe| probe.metrics.as_ref())
-            .map(to_disk_metrics),
-    }
-}
-
-fn to_disk_metrics(metrics: &StoredMetrics) -> DiskMetrics {
-    DiskMetrics {
-        ok: metrics.ok,
-        connect_p50: metrics.connect_p50,
-        connect_p95: metrics.connect_p95,
-        ttfb_p50: metrics.ttfb_p50,
-        ttfb_p95: metrics.ttfb_p95,
-    }
-}
-
-fn from_disk_metrics(metrics: DiskMetrics) -> StoredMetrics {
-    StoredMetrics {
-        ok: metrics.ok,
-        connect_p50: metrics.connect_p50,
-        connect_p95: metrics.connect_p95,
-        ttfb_p50: metrics.ttfb_p50,
-        ttfb_p95: metrics.ttfb_p95,
-    }
-}
-
-fn decode(bytes: &[u8]) -> Result<Vec<StoredBucket>, String> {
-    let disk: Disk = serde_json::from_slice(bytes).map_err(json_error)?;
-    let mut countries = HashMap::new();
-    let mut probes: HashMap<String, Option<StoredProbe>> = HashMap::new();
-    let mut stale = HashSet::new();
-    let mut groups: BTreeMap<Subnet, Vec<ProxyLine>> = BTreeMap::new();
-    for bucket in disk.buckets {
-        let Some(subnet) = Subnet::parse_cidr(&bucket.cidr) else {
-            continue;
-        };
-        let cidr = subnet.cidr();
-        if let Some(code) = bucket.country {
-            countries.insert(cidr.clone(), code);
+    pub fn restore(buckets: Vec<StoredBucket>) -> Self {
+        Self {
+            buckets: buckets
+                .into_iter()
+                .map(|bucket| (bucket.subnet, bucket))
+                .collect(),
         }
-        let incoming: Vec<ProxyLine> = bucket
-            .proxies
-            .iter()
-            .filter_map(|line| parse_source(line, subnet))
-            .collect();
-        let grown = match groups.get(&subnet) {
-            Some(existing) => incoming
-                .iter()
-                .any(|proxy| !existing.iter().any(|item| item.source == proxy.source)),
-            None => false,
-        };
-        let probe = bucket.last_run_at.map(|at| StoredProbe {
-            at,
-            metrics: bucket.metrics.map(from_disk_metrics),
-        });
-        if grown {
-            stale.insert(cidr.clone());
-            probes.insert(cidr, None);
-        } else if !stale.contains(&cidr) {
-            match probes.get_mut(&cidr) {
-                Some(stored) => {
-                    if let Some(next) = probe {
-                        if stored
-                            .as_ref()
-                            .map(|current| next.at > current.at)
-                            .unwrap_or(true)
-                        {
-                            *stored = Some(next);
-                        }
+    }
+
+    pub fn merge(&mut self, buckets: Vec<Bucket>, countries: &HashMap<String, String>) -> Merge {
+        let mut grown = Vec::new();
+        for bucket in buckets {
+            let cidr = bucket.subnet.cidr();
+            match self.buckets.get_mut(&bucket.subnet) {
+                Some(existing) => {
+                    let before = existing.proxies.len();
+                    append_unique(&mut existing.proxies, bucket.proxies);
+                    if existing.country.is_none() {
+                        existing.country = countries.get(&cidr).cloned();
+                    }
+                    if existing.proxies.len() > before {
+                        existing.last_probe = None;
+                        grown.push(cidr);
                     }
                 }
                 None => {
-                    probes.insert(cidr, probe);
+                    self.buckets.insert(
+                        bucket.subnet,
+                        StoredBucket {
+                            country: countries.get(&cidr).cloned(),
+                            subnet: bucket.subnet,
+                            proxies: unique_sources(bucket.proxies),
+                            last_probe: None,
+                        },
+                    );
                 }
             }
         }
-        let entry = groups.entry(subnet).or_default();
-        for proxy in incoming {
-            if !entry.iter().any(|item| item.source == proxy.source) {
-                entry.push(proxy);
+        Merge { grown }
+    }
+
+    pub fn remove(&mut self, subnet: Subnet) -> bool {
+        self.buckets.remove(&subnet).is_some()
+    }
+
+    pub fn record_probe(&mut self, cidr: &str, at: u64, metrics: Option<StoredMetrics>) {
+        let Some(subnet) = Subnet::parse_cidr(cidr) else {
+            return;
+        };
+        if let Some(bucket) = self.buckets.get_mut(&subnet) {
+            bucket.last_probe = Some(StoredProbe { at, metrics });
+        }
+    }
+
+    pub fn record_probes(&mut self, at: u64, metrics: &HashMap<String, StoredMetrics>) {
+        for (cidr, item) in metrics {
+            self.record_probe(cidr, at, Some(item.clone()));
+        }
+    }
+
+    pub fn record_countries(&mut self, countries: &HashMap<String, String>) {
+        for (cidr, country) in countries {
+            let Some(subnet) = Subnet::parse_cidr(cidr) else {
+                continue;
+            };
+            if let Some(bucket) = self.buckets.get_mut(&subnet) {
+                bucket.country = Some(country.clone());
             }
         }
     }
-    let buckets = groups
-        .into_iter()
-        .map(|(subnet, proxies)| Bucket { subnet, proxies })
-        .collect();
-    let mut session = session::Session::new();
-    session.merge(buckets, &countries);
-    for (cidr, probe) in probes {
-        if let Some(probe) = probe {
-            session.record_probe(&cidr, probe.at, probe.metrics);
+
+    pub fn snapshot(&self) -> Vec<StoredBucket> {
+        self.buckets.values().cloned().collect()
+    }
+
+    pub fn resolve_scope(&self, cidrs: Option<Vec<String>>) -> Result<Vec<StoredBucket>, String> {
+        let Some(cidrs) = cidrs else {
+            return Ok(self.snapshot());
+        };
+        if cidrs.is_empty() {
+            return Err("Select at least one subnet.".into());
+        }
+        let subnets = cidrs
+            .into_iter()
+            .map(|cidr| Subnet::parse_cidr(&cidr).ok_or_else(|| "Unknown subnet.".to_string()))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        subnets
+            .into_iter()
+            .map(|subnet| {
+                self.buckets
+                    .get(&subnet)
+                    .cloned()
+                    .ok_or_else(|| "Unknown subnet.".to_string())
+            })
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }
+}
+
+fn unique_sources(proxies: Vec<ProxyLine>) -> Vec<ProxyLine> {
+    let mut seen = Vec::new();
+    append_unique(&mut seen, proxies);
+    seen
+}
+
+fn append_unique(existing: &mut Vec<ProxyLine>, incoming: Vec<ProxyLine>) {
+    for proxy in incoming {
+        if !existing.iter().any(|item| item.source == proxy.source) {
+            existing.push(proxy);
         }
     }
-    Ok(session.snapshot())
 }
 
-fn parse_source(line: &str, subnet: Subnet) -> Option<ProxyLine> {
-    let (items, skipped) = parse::parse_text(&format!("{line}\n"));
-    if skipped > 0 || items.len() != 1 {
-        return None;
-    }
-    let proxy = items.into_iter().next()?;
-    if Subnet::from_host(proxy.host) != subnet {
-        return None;
-    }
-    Some(proxy)
-}
-
-fn json_error(err: serde_json::Error) -> String {
-    format!(
-        "Could not read inventory (line {} column {})",
-        err.line(),
-        err.column()
-    )
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    crate::secure_file::write(&tmp, bytes).map_err(|err| err.to_string())?;
-    fs::rename(&tmp, path).map_err(|err| {
-        let _ = fs::remove_file(&tmp);
-        err.to_string()
-    })
-}
+pub struct SessionStore(pub Mutex<Session>);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::parse::ProxyLine;
+    use crate::split::by_slash24;
 
-    fn temp_store() -> (PathBuf, Store) {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "proxybench-inventory-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("proxies.json");
-        (dir, Store::new(path))
+    fn proxy(host: &str) -> ProxyLine {
+        ProxyLine {
+            host: host.parse().unwrap(),
+            port: 8080,
+            username: "user".into(),
+            password: "pass".into(),
+            source: format!("{host}:8080:user:pass"),
+        }
     }
 
-    fn bucket(host: &str, country: Option<&str>, sources: &[&str]) -> StoredBucket {
-        StoredBucket {
-            subnet: Subnet::from_host(host.parse().unwrap()),
-            country: country.map(str::to_string),
-            proxies: sources
-                .iter()
-                .filter_map(|source| parse_source(source, Subnet::from_host(host.parse().unwrap())))
-                .collect(),
-            last_probe: None,
-        }
+    fn spaced(host: &str) -> ProxyLine {
+        let mut item = proxy(host);
+        item.source = format!("  {host}:8080:user:pass  ");
+        item
     }
 
     fn sample_metrics(ok: usize) -> StoredMetrics {
         StoredMetrics {
             ok,
-            connect_p50: Some(12.5),
-            connect_p95: Some(40.0),
-            ttfb_p50: Some(80.0),
-            ttfb_p95: Some(120.0),
+            connect_p50: Some(10.0),
+            connect_p95: Some(20.0),
+            ttfb_p50: Some(30.0),
+            ttfb_p95: Some(40.0),
+        }
+    }
+
+    fn probe(at: u64, ok: usize) -> StoredProbe {
+        StoredProbe {
+            at,
+            metrics: Some(sample_metrics(ok)),
         }
     }
 
     #[test]
-    fn save_then_load_roundtrips_verbatim_sources() {
-        let (dir, store) = temp_store();
-        store
-            .save(&[bucket(
-                "192.0.2.10",
-                Some("FR"),
-                &["  192.0.2.10:8080:user:p:ss  "],
-            )])
+    fn merge_appends_unique_sources_and_keeps_country() {
+        let mut session = Session::new();
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".into(), "FR".into());
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &countries);
+        let mut later = HashMap::new();
+        later.insert("192.0.2.0/24".into(), "US".into());
+        later.insert("198.51.100.0/24".into(), "DE".into());
+        let result = session.merge(
+            by_slash24(vec![
+                proxy("192.0.2.10"),
+                proxy("192.0.2.11"),
+                spaced("192.0.2.10"),
+                proxy("198.51.100.2"),
+            ]),
+            &later,
+        );
+        assert_eq!(result.grown, vec!["192.0.2.0/24".to_string()]);
+        assert!(session
+            .snapshot()
+            .iter()
+            .any(|bucket| bucket.subnet.cidr() == "198.51.100.0/24"));
+        let fr = session
+            .snapshot()
+            .into_iter()
+            .find(|bucket| bucket.subnet.cidr() == "192.0.2.0/24")
             .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].country.as_deref(), Some("FR"));
-        assert_eq!(loaded[0].proxies[0].source, "  192.0.2.10:8080:user:p:ss  ");
-        assert_eq!(loaded[0].proxies[0].password, "p:ss");
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(fr.country.as_deref(), Some("FR"));
+        assert_eq!(fr.proxies.len(), 3);
+        let de = session
+            .snapshot()
+            .into_iter()
+            .find(|bucket| bucket.subnet.cidr() == "198.51.100.0/24")
+            .unwrap();
+        assert_eq!(de.country.as_deref(), Some("DE"));
     }
 
     #[test]
-    fn save_then_load_roundtrips_last_run_at() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: None,
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: None,
-            })
+    fn merge_fills_country_when_missing() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".into(), "FR".into());
+        session.merge(by_slash24(vec![proxy("192.0.2.11")]), &countries);
+        let fr = session.snapshot().into_iter().next().unwrap();
+        assert_eq!(fr.country.as_deref(), Some("FR"));
+        assert_eq!(fr.proxies.len(), 2);
+    }
+
+    #[test]
+    fn remove_drops_one_subnet() {
+        let mut session = Session::new();
+        session.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
+        assert!(session.remove(Subnet::from_host("192.0.2.10".parse().unwrap())));
+        assert!(!session.remove(Subnet::from_host("192.0.2.10".parse().unwrap())));
+        assert_eq!(session.snapshot().len(), 1);
+        assert_eq!(session.snapshot()[0].subnet.cidr(), "198.51.100.0/24");
     }
 
     #[test]
-    fn save_then_load_roundtrips_metrics() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: Some(sample_metrics(4)),
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: Some(sample_metrics(4)),
-            })
+    fn snapshot_does_not_depend_on_mutex() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        let copy = session.snapshot();
+        assert_eq!(copy.len(), 1);
+        assert_eq!(copy[0].proxies.len(), 1);
+    }
+
+    #[test]
+    fn restore_keeps_country_and_sources() {
+        let mut session = Session::new();
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".into(), "FR".into());
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &countries);
+        let restored = Session::restore(session.snapshot());
+        let bucket = restored.snapshot().into_iter().next().unwrap();
+        assert_eq!(bucket.country.as_deref(), Some("FR"));
+        assert_eq!(bucket.proxies.len(), 1);
+    }
+
+    #[test]
+    fn record_probe_sets_metrics_and_merge_clears_when_grown() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        session.record_probe("192.0.2.0/24", 42, Some(sample_metrics(1)));
+        assert_eq!(session.snapshot()[0].last_probe, Some(probe(42, 1)));
+        session.merge(by_slash24(vec![proxy("192.0.2.11")]), &HashMap::new());
+        assert_eq!(session.snapshot()[0].last_probe, None);
+    }
+
+    #[test]
+    fn unchanged_merge_keeps_last_probe() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        session.record_probe("192.0.2.0/24", 42, Some(sample_metrics(1)));
+        let result = session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        assert!(result.grown.is_empty());
+        assert_eq!(session.snapshot()[0].last_probe, Some(probe(42, 1)));
+    }
+
+    #[test]
+    fn record_probe_updates_only_matching_cidr() {
+        let mut session = Session::new();
+        session.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
+        let mut metrics = HashMap::new();
+        metrics.insert("192.0.2.0/24".into(), sample_metrics(1));
+        metrics.insert("203.0.113.0/24".into(), sample_metrics(8));
+        session.record_probes(42, &metrics);
+        let snapshot = session.snapshot();
+        let first = snapshot
+            .iter()
+            .find(|bucket| bucket.subnet.cidr() == "192.0.2.0/24")
+            .unwrap();
+        let second = snapshot
+            .iter()
+            .find(|bucket| bucket.subnet.cidr() == "198.51.100.0/24")
+            .unwrap();
+        assert_eq!(first.last_probe, Some(probe(42, 1)));
+        assert_eq!(second.last_probe, None);
     }
 
     #[test]
-    fn save_then_load_roundtrips_all_failed_metrics() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: Some(StoredMetrics {
-                ok: 0,
-                connect_p50: None,
-                connect_p95: None,
-                ttfb_p50: None,
-                ttfb_p95: None,
-            }),
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        let probe = loaded[0].last_probe.clone().unwrap();
-        assert_eq!(probe.at, 1_700_000_000_000);
-        let metrics = probe.metrics.unwrap();
-        assert_eq!(metrics.ok, 0);
-        assert_eq!(metrics.connect_p50, None);
-        assert_eq!(metrics.connect_p95, None);
-        assert_eq!(metrics.ttfb_p50, None);
-        assert_eq!(metrics.ttfb_p95, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_accepts_legacy_buckets_without_last_run_at() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_accepts_legacy_last_run_at_without_metrics() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":1700000000000}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: None,
-            })
+    fn record_countries_refreshes_valid_values_and_keeps_missing_ones() {
+        let mut session = Session::new();
+        let mut initial = HashMap::new();
+        initial.insert("192.0.2.0/24".into(), "FR".into());
+        initial.insert("198.51.100.0/24".into(), "DE".into());
+        session.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &initial,
         );
-        let _ = fs::remove_dir_all(&dir);
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".into(), "US".into());
+        session.record_countries(&countries);
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot[0].country.as_deref(), Some("US"));
+        assert_eq!(snapshot[1].country.as_deref(), Some("DE"));
     }
 
     #[test]
-    fn load_ignores_orphan_metrics_without_last_run_at() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"metrics":{"ok":3,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_clears_probe_when_duplicate_cidr_grows() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":1700000000000,"metrics":{"ok":1,"connect_p50":10.0,"connect_p95":20.0,"ttfb_p50":30.0,"ttfb_p95":40.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.11:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 2);
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_keeps_probe_cleared_after_later_duplicate_of_grown_cidr() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":100,"metrics":{"ok":1,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.11:8080:user:pass"]},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":300,"metrics":{"ok":2,"connect_p50":5.0,"connect_p95":6.0,"ttfb_p50":7.0,"ttfb_p95":8.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 2);
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_keeps_latest_probe_when_duplicate_cidr_is_unchanged() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":100,"metrics":{"ok":1,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":200,"metrics":{"ok":2,"connect_p50":5.0,"connect_p95":6.0,"ttfb_p50":7.0,"ttfb_p95":8.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 1);
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 200,
-                metrics: Some(StoredMetrics {
-                    ok: 2,
-                    connect_p50: Some(5.0),
-                    connect_p95: Some(6.0),
-                    ttfb_p50: Some(7.0),
-                    ttfb_p95: Some(8.0),
-                }),
-            })
+    fn resolve_scope_returns_all_buckets() {
+        let mut session = Session::new();
+        session.merge(
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_file_is_empty() {
-        let (dir, store) = temp_store();
-        assert!(store.load().unwrap().is_empty());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_rejects_invalid_json_without_source_text() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":null,"proxies":"192.0.2.10:8080:user:secret"}]}"#,
-        )
-        .unwrap();
-        let err = match store.load() {
-            Ok(_) => panic!("expected invalid json"),
-            Err(err) => err,
-        };
-        assert!(!err.contains("secret"));
-        assert!(!err.contains("user"));
-        assert!(err.contains("line"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_skips_corrupt_cidr_and_foreign_lines() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"not-a-cidr","country":null,"proxies":["bad"]},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass","198.51.100.2:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].proxies.len(), 1);
+        let buckets = session.resolve_scope(None).unwrap();
         assert_eq!(
-            loaded[0].proxies[0].host,
-            "192.0.2.10".parse::<std::net::Ipv4Addr>().unwrap()
+            buckets
+                .iter()
+                .map(|bucket| bucket.subnet.cidr())
+                .collect::<Vec<_>>(),
+            vec!["192.0.2.0/24", "198.51.100.0/24"]
         );
-        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_scope_deduplicates_and_sorts_subnets() {
+        let mut session = Session::new();
+        session.merge(
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
+            &HashMap::new(),
+        );
+        let buckets = session
+            .resolve_scope(Some(vec![
+                "198.51.100.0/24".into(),
+                "192.0.2.0/24".into(),
+                "198.51.100.0/24".into(),
+            ]))
+            .unwrap();
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.subnet.cidr())
+                .collect::<Vec<_>>(),
+            vec!["192.0.2.0/24", "198.51.100.0/24"]
+        );
+    }
+
+    #[test]
+    fn resolve_scope_rejects_empty_malformed_and_missing_subnets() {
+        let mut session = Session::new();
+        session.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        assert!(matches!(
+            session.resolve_scope(Some(Vec::new())),
+            Err(error) if error == "Select at least one subnet."
+        ));
+        assert!(matches!(
+            session.resolve_scope(Some(vec!["192.0.2.10/24".into()])),
+            Err(error) if error == "Unknown subnet."
+        ));
+        assert!(matches!(
+            session.resolve_scope(Some(vec!["198.51.100.0/24".into()])),
+            Err(error) if error == "Unknown subnet."
+        ));
     }
 }
