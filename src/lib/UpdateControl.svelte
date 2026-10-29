@@ -1,110 +1,106 @@
 <script lang="ts">
-  import type { Update } from "@tauri-apps/plugin-updater";
-  import { checkForUpdate, installUpdate, type UpdateProgress } from "$lib/update";
-  import Button from "./ui/Button.svelte";
+  import { ipc, type AvailableUpdate } from "./ipc";
+
+  type Phase = { kind: "idle" } | { kind: "checking" } | { kind: "ready"; update: AvailableUpdate } | { kind: "installing"; fraction: number | null };
 
   let {
     disabled,
-    onBusyChange,
-    onNotice,
+    onBusy,
+    onInfo,
+    onError,
   }: {
     disabled: boolean;
-    onBusyChange: (busy: boolean) => void;
-    onNotice: (message: string, failed: boolean) => void;
+    onBusy: (busy: boolean) => void;
+    onInfo: (message: string) => void;
+    onError: (message: string) => void;
   } = $props();
 
-  let checking = $state(false);
-  let installing = $state(false);
-  let update = $state<Update | null>(null);
-  let progress = $state<UpdateProgress>({ downloaded: 0, total: null });
-  let announcement = $state("");
+  let phase = $state<Phase>({ kind: "idle" });
 
   const label = $derived.by(() => {
-    if (checking) {
-      return "Checking for updates…";
+    switch (phase.kind) {
+      case "checking":
+        return "Checking for updates";
+      case "ready":
+        return `Install v${phase.update.version}`;
+      case "installing":
+        return phase.fraction === null ? "Installing update" : `Installing update, ${Math.round(phase.fraction * 100)}%`;
+      default:
+        return "Check for updates";
     }
-    if (installing) {
-      if (!progress.total) {
-        return "Installing update…";
-      }
-      return `Installing update, ${Math.min(100, Math.round((progress.downloaded / progress.total) * 100))}%`;
-    }
-    if (update) {
-      return `Install v${update.version}`;
-    }
-    return "Check for updates";
   });
 
-  async function findUpdate() {
-    if (disabled || checking || installing) {
-      return;
-    }
-    checking = true;
-    onBusyChange(true);
-    onNotice("", false);
-    announcement = "Checking for updates";
+  async function find() {
+    phase = { kind: "checking" };
+    onBusy(true);
     try {
-      update = await checkForUpdate();
-      if (!update) {
-        onNotice("Up to date", false);
-        announcement = "Up to date";
-      } else {
-        onNotice(`Version ${update.version} available`, false);
-        announcement = `Version ${update.version} available`;
-      }
+      const update = await ipc.findUpdate();
+      phase = update ? { kind: "ready", update } : { kind: "idle" };
+      onInfo(update ? `Version ${update.version} available` : "Up to date");
     } catch {
-      onNotice("Update check failed", true);
-      announcement = "Update check failed";
+      phase = { kind: "idle" };
+      onError("Update check failed");
     } finally {
-      checking = false;
-      onBusyChange(false);
+      onBusy(false);
     }
   }
 
-  async function applyUpdate() {
-    if (!update || disabled || checking || installing) {
-      return;
-    }
-    installing = true;
-    onBusyChange(true);
-    onNotice("", false);
-    announcement = `Installing version ${update.version}`;
+  async function install(update: AvailableUpdate) {
+    phase = { kind: "installing", fraction: null };
+    onBusy(true);
     try {
-      await installUpdate(update, (next) => {
-        progress = next;
-        if (next.total) {
-          onNotice(
-            `Updating ${Math.min(100, Math.round((next.downloaded / next.total) * 100))}%`,
-            false,
-          );
-        } else {
-          onNotice("Updating…", false);
-        }
+      await update.install((fraction) => {
+        phase = { kind: "installing", fraction };
+        onInfo(fraction === null ? "Updating…" : `Updating ${Math.round(fraction * 100)}%`);
       });
     } catch {
-      onNotice("Update failed. Try again.", true);
-      announcement = "Update failed. Try again.";
-      installing = false;
-      onBusyChange(false);
+      phase = { kind: "ready", update };
+      onBusy(false);
+      onError("Update failed. Try again.");
     }
   }
 </script>
 
-<Button
-  variant="quiet"
-  size="icon"
-  class="relative {update ? 'text-accent' : 'text-faint'}"
-  disabled={disabled || checking || installing}
+<button
+  type="button"
+  class="link update"
+  class:ready={phase.kind === "ready"}
+  class:spinning={phase.kind === "checking" || phase.kind === "installing"}
+  disabled={disabled || phase.kind === "checking" || phase.kind === "installing"}
   aria-label={label}
-  aria-busy={checking || installing}
+  aria-busy={phase.kind === "checking" || phase.kind === "installing"}
   title={label}
-  onclick={() => (update ? applyUpdate() : findUpdate())}
+  onclick={() => (phase.kind === "ready" ? install(phase.update) : find())}
 >
-  <span class={checking || installing ? "animate-spin" : ""} aria-hidden="true">
-    {update && !installing ? "↓" : "↻"}
-  </span>
-  {#if update && !installing}
-    <span class="absolute right-0 top-0 h-1 w-1 rounded-full bg-accent" aria-hidden="true"></span>
-  {/if}
-</Button>
-<span class="sr-only" role="status" aria-live="polite">{announcement}</span>
+  <span class="glyph" aria-hidden="true">{phase.kind === "ready" ? "↓" : "↻"}</span>
+</button>
+
+<style>
+  .update {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+  }
+
+  .ready {
+    color: var(--color-accent);
+  }
+
+  .glyph {
+    display: inline-block;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .spinning .glyph {
+      animation: spin 1s linear infinite;
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+</style>

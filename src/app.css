@@ -1,49 +1,199 @@
-@import "tailwindcss";
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./assets/fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+}
 
-@theme {
-  --color-bg: #111213;
-  --color-raised: #191a1c;
-  --color-line: #2b2d30;
-  --color-text: #f1f1ee;
-  --color-muted: #b6b7b8;
-  --color-faint: #92959a;
-  --color-accent: #78a9ff;
-  --color-good: #8ec07c;
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("./assets/fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+}
+
+:root {
+  --color-bg: #101010;
+  --color-surface: #161616;
+  --color-raised: #1e1e1e;
+  --color-line: #242424;
+  --color-edge: #3a3a3a;
+  --color-text: #ececec;
+  --color-muted: #a8a8a8;
+  --color-faint: #858585;
+  --color-accent: #9dbefe;
+  --color-good: #9bcd97;
+  --color-warn: #d6b36b;
   --color-bad: #e0866b;
-  --radius-control: 6px;
-  --radius-surface: 10px;
-  --ease-ui: 140ms ease;
+
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+
+  --radius-chip: 2px;
+  --radius-control: 4px;
+
+  --gutter: 16px;
+  --height-toolbar: 48px;
+  --height-head: 32px;
+  --height-row: 36px;
+  --height-bar: 34px;
+  --height-control: 28px;
+  --height-chip: 20px;
+
+  --duration-fast: 100ms;
+  --duration-base: 150ms;
+  --ease-ui: cubic-bezier(0.2, 0, 0, 1);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 html,
-body {
+body,
+#app {
   height: 100%;
   margin: 0;
   overflow: hidden;
+}
+
+body {
   background: var(--color-bg);
   color: var(--color-text);
-  font-family: "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-table {
-  border-collapse: collapse;
+button,
+input {
+  font: inherit;
+  color: inherit;
+  margin: 0;
 }
 
-.chip-strip {
-  scrollbar-width: none;
-  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+button {
+  cursor: default;
 }
 
-.chip-strip::-webkit-scrollbar {
-  display: none;
+input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--height-control);
+  padding: 0 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--color-faint);
+  color: var(--color-text);
+}
+
+.button.primary {
+  border-color: var(--color-text);
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.button.primary:hover:not(:disabled) {
+  border-color: var(--color-muted);
+  background: var(--color-muted);
+  color: var(--color-bg);
+}
+
+.button:disabled {
+  opacity: 0.4;
+}
+
+.link {
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+}
+
+.link:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.link:disabled {
+  opacity: 0.4;
+}
+
+.field {
+  height: var(--height-control);
+  padding: 0 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-control);
+  background: var(--color-raised);
+  color: var(--color-text);
+  font-size: var(--text-xs);
+}
+
+.field::placeholder {
+  color: var(--color-faint);
+}
+
+.field:disabled {
+  opacity: 0.4;
+}
+
+.field:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  button,
-  input,
-  [role="menu"],
-  [role="dialog"] {
-    transition: color var(--ease-ui), background-color var(--ease-ui), border-color var(--ease-ui),
-      box-shadow var(--ease-ui), opacity var(--ease-ui);
+  .button,
+  .link,
+  .field {
+    transition:
+      color var(--duration-base) var(--ease-ui),
+      background-color var(--duration-base) var(--ease-ui),
+      border-color var(--duration-base) var(--ease-ui);
   }
 }

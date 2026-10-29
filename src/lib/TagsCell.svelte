@@ -2,55 +2,127 @@
   let {
     cidr,
     tags,
-    draft,
-    locked,
-    onAdd,
-    onRemove,
+    onChange,
   }: {
     cidr: string;
     tags: string[];
-    draft: Record<string, string>;
-    locked: boolean;
-    onAdd: (cidr: string) => void;
-    onRemove: (cidr: string, tag: string) => void;
+    onChange: (cidr: string, tags: string[]) => void;
   } = $props();
+
+  let draft = $state("");
+
+  function add() {
+    const value = draft.trim();
+    if (value) {
+      onChange(cidr, [...tags, value]);
+    }
+    draft = "";
+  }
 </script>
 
-<div class="flex h-full max-h-8 items-center gap-1 overflow-hidden">
-  <div
-    class="chip-strip flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap"
-    title={tags.join(", ")}
-  >
-    {#each tags as tag}
-      <button
-        type="button"
-          class="inline-flex h-[22px] max-w-[104px] shrink-0 items-center rounded-[var(--radius-control)] border border-line bg-raised px-1.5 font-mono text-xs text-text hover:border-muted hover:text-muted disabled:opacity-40"
-        disabled={locked}
-        title={tag}
-        aria-label={`Remove tag ${tag}`}
-        onclick={() => onRemove(cidr, tag)}
-      >
-        <span class="truncate">{tag}</span>
-        <span class="shrink-0">&nbsp;×</span>
-      </button>
-    {/each}
-  </div>
+<div class="tags" title={tags.join(", ") || undefined}>
+  {#each tags as tag (tag)}
+    <span class="chip">
+      <span class="name">{tag}</span>
+      <button type="button" class="remove" aria-label="Remove tag {tag}" onclick={() => onChange(cidr, tags.filter((item) => item !== tag))}>×</button>
+    </span>
+  {/each}
   <input
-    class="h-6 w-20 shrink-0 rounded-[var(--radius-control)] bg-transparent px-1 text-xs placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+    class="add"
+    class:filled={draft !== ""}
     placeholder="add"
-    aria-label={`Add tag to ${cidr}`}
-    disabled={locked}
-    bind:value={draft[cidr]}
+    aria-label="Add tag to {cidr}"
+    spellcheck="false"
+    autocomplete="off"
+    bind:value={draft}
     onkeydown={(event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        onAdd(cidr);
-      }
-      if (event.key === "Escape") {
+        add();
+      } else if (event.key === "Escape") {
         event.preventDefault();
-        draft[cidr] = "";
+        event.stopPropagation();
+        draft = "";
         event.currentTarget.blur();
       }
     }}
   />
 </div>
+
+<style>
+  .tags {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 128px;
+    height: var(--height-chip);
+    padding: 0 6px;
+    border: 1px solid var(--color-edge);
+    border-radius: var(--radius-chip);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .remove {
+    display: none;
+    flex-shrink: 0;
+    width: 14px;
+    margin-right: -4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--color-faint);
+  }
+
+  .remove:hover {
+    color: var(--color-text);
+  }
+
+  .add {
+    flex-shrink: 0;
+    width: 72px;
+    height: var(--height-chip);
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-chip);
+    background: transparent;
+    color: var(--color-text);
+    font-size: var(--text-xs);
+    opacity: 0;
+  }
+
+  .add::placeholder {
+    color: var(--color-faint);
+  }
+
+  .add:focus {
+    border-color: var(--color-accent);
+    outline: none;
+  }
+
+  .add:focus,
+  .add.filled,
+  :global(tr:hover) .add,
+  :global(tr:focus-within) .add {
+    opacity: 1;
+  }
+
+  :global(tr:hover) .remove,
+  :global(tr:focus-within) .remove {
+    display: inline-block;
+  }
+</style>
