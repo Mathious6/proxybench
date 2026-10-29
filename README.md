@@ -2,8 +2,8 @@
   <img src="docs/assets/icon.png" alt="proxybench" width="96" height="96">
   <h1>proxybench</h1>
   <p>
-    Split an HTTP proxy list by subnet and measure how quickly each
-    <code>/24</code> connects and receives response headers.
+    Keep HTTP proxy lists organised by subnet, see which <code>/24</code>s are
+    alive, and measure how quickly each one connects and answers.
   </p>
 </div>
 
@@ -18,6 +18,8 @@
   ·
   <a href="#use">Use</a>
   ·
+  <a href="#settings">Settings</a>
+  ·
   <a href="#what-the-numbers-mean">Numbers</a>
 </p>
 
@@ -27,9 +29,10 @@
 
 ## What it does
 
-proxybench is a small desktop app. Drop a list of HTTP proxies, get one row
-per IPv4 `/24`, probe them against one HTTPS URL, and export the lists you
-want to keep.
+proxybench is a small desktop app. Drop a list of HTTP proxies and get one row
+per IPv4 `/24`. A quick **Check** tells you which subnets are alive every time
+you open the app or import a list. A full **Probe** measures Connect and TTFB
+through every proxy. Export the lists you want to keep.
 
 It does not judge whether a site accepted the request. A `200` and a `403`
 are both a valid speed sample: headers arrived. Response bodies are never
@@ -49,7 +52,7 @@ You do not need Git, GitHub, or a developer setup.
 | Windows 10 or 11                        | Windows **x64** setup `.exe` |
 
 On a Mac, open the DMG, drag **proxybench** into Applications, then open it
-normally. MacOS builds are Developer ID signed and notarized by Apple.
+normally. macOS builds are Developer ID signed and notarized by Apple.
 
 On Windows, run the setup wizard. If SmartScreen appears, choose **More
 info**, then **Run anyway**. Windows needs WebView2; Windows 10 and 11
@@ -57,69 +60,83 @@ usually already have it. Windows installers are unsigned.
 
 ## Use
 
-1. Drop a `.txt` file or a folder of `.txt` files onto the window, or click
-   **Open files**. New `/24`s are added; existing ones keep their lines and
-   gain any new ones. The store survives a restart.
-2. One HTTP proxy per line (eg. `192.0.2.10:8080:username:password`). Blank
-   lines and `#` comments are ignored. Anything else is skipped. Imported
-   lines, including credentials, are stored unencrypted in the app's local
-   data directory.
-3. Rows appear immediately, one per IPv4 `/24`. Country is looked up in
-   batches from one listed IP per missing `/24` through
-   [country.is](https://country.is). Each Probe refreshes and saves the country
-   for every `/24` it covers before starting the speed measurements.
-4. Tag subnets if you want. Tags are stored on this computer by CIDR and
-   survive the next import. Click a column header to sort. **Filter** sits
-    with Open files, Export, and Probe all. The table shows 15 subnets per
-    page. Click a row to select it; Command-click on macOS or Ctrl-click on
-    Windows toggles rows, and Shift-click selects the sorted and filtered
-    range across pages; add Command/Ctrl to extend that range. Command/Ctrl-A
-    selects all filtered rows, and Escape clears the selection. Selected rows
-    persist while sorting and filtering.
-    Probe progress and the app version sit in the bottom bar. Right-click a
-    selected row to Probe or Export the selection, or any row to act on only
-    that row; Remove always removes only that row.
-5. **Probe all**, selected rows, or one row. Paste one HTTPS URL the first time; it
-   is remembered. Each proxy is probed once with a 5 second timeout. The
-   table fills with OK, Connect, TTFB (p50 and p95), and Last probe. Those
-   stats survive a restart. Adding proxies to a `/24` drops its last probe.
-   Failures are omitted from those timings.
-6. **Export** writes one `.txt` for a single subnet, or every subnet when none
-   is selected, source lines verbatim:
-   `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Example:
-   `isp-mobile_FR_192.0.2.0_24_42.txt`. No tags means the filename starts
-   with the country code. No country means `XX`. Exporting several subnets
-   at once produces a single `.zip` holding every subnet's `.txt` plus an
-   `ALL_<qty>.txt` with all proxy lines for easy bulk import.
-   The adjacent export menu also offers **Export for AYCD (.json)**, which writes
-   one categorized JSON file for the same scope.
+1. Drop `.txt` files or a folder onto the window, or click **Open files**.
+   One HTTP proxy per line, `host:port:username:password`, for example
+   `192.0.2.10:8080:user:pass`. Blank lines and `#` comments are ignored;
+   anything else is skipped and counted. New `/24`s are added and existing
+   ones gain any new lines. Imported lines, including credentials, are stored
+   unencrypted in the app's local data directory.
+2. Each `/24` gets a status dot. On launch and after every import, proxybench
+   checks a few proxies per subnet: a solid green dot means alive, a half
+   ring means some failed, red means none answered, an empty ring means not
+   checked yet. Click the counts in the bottom bar to show only those rows.
+3. Country is looked up in batches through [country.is](https://country.is),
+   from one listed IP per subnet, and refreshed before every Probe.
+4. Tag subnets if you want. Tags are stored on this computer by subnet and
+   survive the next import. Click a column header to sort, type in
+   **Filter** to match subnet, country, or tag.
+5. Select rows with a click. Command-click on macOS or Ctrl-click on Windows
+   toggles rows, Shift-click selects a range across pages, Command/Ctrl-A
+   selects every filtered row, and Escape clears the selection. Probe,
+   Export, and the right-click menu act on the selection when there is one.
+6. **Probe** measures every proxy of the selected subnets, or all of them.
+   Progress and **Stop** sit in the bottom bar; stopping keeps what was
+   measured. Results survive a restart. Adding proxies to a `/24` clears its
+   status and timings.
+7. **Export** writes one `.txt` per subnet with the source lines verbatim,
+   named `[{tags}_]{CC}_{IP}_24_{qty}.txt`, for example
+   `isp-mobile_FR_192.0.2.0_24_42.txt`. No tags means the name starts with the
+   country code; no country means `XX`. Several subnets at once produce one
+   `.zip` with every subnet's file plus `ALL_<qty>.txt` holding every line.
+   **AYCD JSON** writes one categorized file for the same scope.
+8. **Remove** in the right-click menu deletes the selected subnets, or the
+   one you clicked.
+
+Keyboard: Command/Ctrl-O opens files, Command/Ctrl-F focuses the filter, and
+Command/Ctrl-comma opens Settings.
 
 Run a probe once, then pause. Back-to-back runs saturate your own uplink
 and inflate every subnet.
+
+## Settings
+
+| Setting        | Default | What it does                                                            |
+| -------------- | ------- | ----------------------------------------------------------------------- |
+| Target URL     | a lightweight public endpoint | The one HTTPS target used by Check and Probe.    |
+| Timeout        | 5 s     | A proxy slower than this counts as failed.                              |
+| In flight      | 128     | Most proxies tested at the same time.                                   |
+| Start rate     | 20 /s   | Most new connections opened per second.                                 |
+| Check on launch and after import | on | Runs the quick Check automatically.                  |
+| Sample         | 2       | Proxies the Check tries in each subnet.                                 |
+
+Check only asks each sampled proxy to open a tunnel to the target. Probe goes
+all the way to the target's response headers.
 
 ## What the numbers mean
 
 | Column     | Meaning                                                                                      |
 | ---------- | -------------------------------------------------------------------------------------------- |
 | Qty        | Proxies imported in that `/24`.                                                              |
-| OK         | Probes that returned origin headers within 5 seconds.                                        |
-| Last probe | When that `/24` last finished a Probe run.                                                   |
+| OK         | Probes that returned origin headers within the timeout.                                      |
 | Connect    | Time from dialing the proxy until HTTP CONNECT returns `200` (tunnel up, before origin TLS). |
 | TTFB       | Time from that same start until origin HTTPS headers arrive.                                 |
+| p95        | The slower end: 95% of successful probes were at least this fast.                            |
+| Last probe | When that `/24` last finished a Probe.                                                       |
 
-Each probe uses a fresh TCP connection. Reuse would zero Connect.
+Each probe uses a fresh TCP connection. Reuse would zero Connect. Failures
+are left out of the timings and counted against OK.
 
-Connect and TTFB cells show milliseconds (or seconds above one second).
-Under 500 ms is green, over 1500 ms is red. OK is green at 80% success and
-red below 30%. That colour is emphasis, not a score.
+Timings show milliseconds, or seconds above one second. A median under
+500 ms is green; anything over 1500 ms is red. OK is green at 80% success and
+red below 30%. Colour is emphasis, not a score.
 
 ## Not this tool
 
 - Not a bypass tester, quality score, or anti-bot oracle.
-- Not SOCKS, not proxy URLs, not extra line formats.
+- Not SOCKS, not proxy URLs, not hostnames or IPv6, not extra line formats.
 - Not a multi-target lab. One URL per run.
 - Does not download bodies. Does not report status codes or error types.
 
 ## License
 
-MIT.
+MIT. The bundled IBM Plex Mono font is under the SIL Open Font License.
