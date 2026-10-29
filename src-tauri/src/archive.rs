@@ -93,7 +93,7 @@ mod tests {
         write_zip(&path, &entries()).unwrap();
         let archive = ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(archive.len(), 3);
-        assert!(archive.file_names().all(|name| !name.eq("old.txt")));
+        assert!(archive.file_names().all(|name| name.unwrap() != "old.txt"));
         let _ = fs::remove_file(path);
     }
 
