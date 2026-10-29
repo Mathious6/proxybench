@@ -2,6 +2,7 @@ use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
+    url: String,
     pub host: String,
     pub port: u16,
     pub origin_form: String,
@@ -24,10 +25,15 @@ impl Target {
         let port = url.port().unwrap_or(443);
         let origin_form = origin_form(&url);
         Ok(Self {
+            url: raw.trim().to_string(),
             host,
             port,
             origin_form,
         })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.url
     }
 
     pub fn authority(&self) -> String {
@@ -85,6 +91,12 @@ mod tests {
         assert!(Target::parse("https://:pass@example.com").is_err());
         assert!(Target::parse("not a url").is_err());
         assert!(Target::parse("https://").is_err());
+    }
+
+    #[test]
+    fn as_str_keeps_the_trimmed_input() {
+        let target = Target::parse("  https://example.com/status  ").unwrap();
+        assert_eq!(target.as_str(), "https://example.com/status");
     }
 
     #[test]

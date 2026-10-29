@@ -1,178 +1,97 @@
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
-use crate::aycd;
-use crate::export;
-use crate::import::{self, InventoryStore, TagStore};
-use crate::last_target;
-use crate::run::{self, Metrics, Progress};
-use crate::session::{SessionStore, StoredBucket, StoredMetrics};
-use crate::target::Target;
+use crate::library;
+use crate::settings::{Settings, SettingsSheet};
+use crate::state::AppState;
+use crate::wire::{ImportReport, RunProgress, RunSummary, SubnetRow};
+use crate::workflow;
 
-const LAST_TARGET_FILE: &str = "last-target.txt";
 const PROGRESS_EVENT: &str = "run-progress";
-const COUNTRIES_EVENT: &str = "countries-refreshed";
 
-pub struct LastTarget(pub last_target::Store);
-
-pub fn open_last_target(app: &AppHandle) -> Result<last_target::Store, String> {
-    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
-    Ok(last_target::Store::new(dir.join(LAST_TARGET_FILE)))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunResult {
-    pub completed_at: u64,
-    pub metrics: Vec<Metrics>,
-    pub countries: HashMap<String, String>,
+#[tauri::command]
+pub fn rows(state: State<'_, AppState>) -> Result<Vec<SubnetRow>, String> {
+    library::rows(&state)
 }
 
 #[tauri::command]
-pub fn last_target(store: State<'_, LastTarget>) -> Result<Option<String>, String> {
-    store.0.load()
+pub async fn import_paths(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ImportReport, String> {
+    library::import_paths(&state, paths).await
 }
 
 #[tauri::command]
-pub async fn start_run(
-    url: String,
+pub fn set_tags(
+    cidr: String,
+    tags: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    library::set_tags(&state, cidr, tags)
+}
+
+#[tauri::command]
+pub fn remove(cidrs: Vec<String>, state: State<'_, AppState>) -> Result<Vec<SubnetRow>, String> {
+    library::remove(&state, cidrs)
+}
+
+#[tauri::command]
+pub fn settings(state: State<'_, AppState>) -> Result<SettingsSheet, String> {
+    state.settings().map(SettingsSheet::new)
+}
+
+#[tauri::command]
+pub fn save_settings(
+    settings: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<Settings, String> {
+    let settings = serde_json::from_value(settings).map_err(|err| err.to_string())?;
+    state.replace_settings(settings)
+}
+
+#[tauri::command]
+pub async fn check(
     cidrs: Option<Vec<String>>,
     app: AppHandle,
-    session: State<'_, SessionStore>,
-    last: State<'_, LastTarget>,
-    inventory: State<'_, InventoryStore>,
-) -> Result<RunResult, String> {
-    let target = Target::parse(&url)?;
-    last.0.save(&url)?;
-    let buckets = {
-        let session = session.0.lock().map_err(|err| err.to_string())?;
-        if session.is_empty() {
-            return Err("Import proxies before probing.".into());
-        }
-        session.resolve_scope(cidrs)?
-    };
-    let samples: Vec<_> = buckets
-        .iter()
-        .filter_map(|bucket| bucket.proxies.first().map(|proxy| proxy.host))
-        .collect();
-    let countries = tauri::async_runtime::spawn_blocking(move || crate::country::lookup(&samples));
-    let countries = countries.await.map_err(|err| err.to_string())?;
-    if !countries.is_empty() {
-        let mut session = session.0.lock().map_err(|err| err.to_string())?;
-        let mut candidate = session.clone();
-        candidate.record_countries(&countries);
-        inventory.0.save(&candidate.snapshot())?;
-        *session = candidate;
-        let _ = app.emit(COUNTRIES_EVENT, &countries);
-    }
-    let window = app.clone();
-    let finished = run::probe_session(buckets, target, move |progress: Progress| {
-        let _ = window.emit(PROGRESS_EVENT, progress);
-    })
-    .await;
-    let completed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis() as u64)
-        .unwrap_or(0);
-    {
-        let mut session = session.0.lock().map_err(|err| err.to_string())?;
-        let mut candidate = session.clone();
-        let stored: HashMap<String, StoredMetrics> = finished
-            .iter()
-            .map(|(cidr, metrics)| (cidr.clone(), stored_metrics(metrics)))
-            .collect();
-        candidate.record_probes(completed_at, &stored);
-        let snapshot = candidate.snapshot();
-        inventory.0.save(&snapshot)?;
-        *session = candidate;
-    }
-    let mut metrics: Vec<Metrics> = finished.into_values().collect();
-    metrics.sort_by(|left, right| left.cidr.cmp(&right.cidr));
-    Ok(RunResult {
-        completed_at,
-        metrics,
-        countries,
-    })
-}
-
-fn stored_metrics(metrics: &Metrics) -> StoredMetrics {
-    StoredMetrics {
-        ok: metrics.ok,
-        connect_p50: metrics.connect_p50,
-        connect_p95: metrics.connect_p95,
-        ttfb_p50: metrics.ttfb_p50,
-        ttfb_p95: metrics.ttfb_p95,
-    }
+    state: State<'_, AppState>,
+) -> Result<RunSummary, String> {
+    workflow::check(&state, cidrs, |progress| emit_progress(&app, progress)).await
 }
 
 #[tauri::command]
-pub fn export_dir(
+pub async fn probe(
+    cidrs: Option<Vec<String>>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RunSummary, String> {
+    workflow::probe(&state, cidrs, |progress| emit_progress(&app, progress)).await
+}
+
+#[tauri::command]
+pub fn stop(state: State<'_, AppState>) {
+    state.slot.stop();
+}
+
+#[tauri::command]
+pub fn export_txt(
     path: String,
     cidrs: Option<Vec<String>>,
-    session: State<'_, SessionStore>,
-    tags: State<'_, TagStore>,
+    state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let buckets = export_buckets(&session, cidrs)?;
-    let store = tags.0.lock().map_err(|err| err.to_string())?;
-    export::write_dir(std::path::Path::new(&path), &buckets, &store)
+    library::export_txt(&state, Path::new(&path), cidrs)
 }
 
 #[tauri::command]
 pub fn export_aycd(
     path: String,
     cidrs: Option<Vec<String>>,
-    session: State<'_, SessionStore>,
-    tags: State<'_, TagStore>,
+    state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let buckets = export_buckets(&session, cidrs)?;
-    let store = tags.0.lock().map_err(|err| err.to_string())?;
-    aycd::write(std::path::Path::new(&path), &buckets, &store)
+    library::export_aycd(&state, Path::new(&path), cidrs)
 }
 
-fn export_buckets(
-    session: &SessionStore,
-    cidrs: Option<Vec<String>>,
-) -> Result<Vec<StoredBucket>, String> {
-    let session = session.0.lock().map_err(|err| err.to_string())?;
-    if session.is_empty() {
-        return Err("Import proxies before exporting.".into());
-    }
-    session.resolve_scope(cidrs)
-}
-
-#[tauri::command]
-pub fn session_rows(
-    session: State<'_, SessionStore>,
-    tags: State<'_, TagStore>,
-) -> Result<Vec<import::SubnetRow>, String> {
-    let buckets = session.0.lock().map_err(|err| err.to_string())?.snapshot();
-    let tags = tags.0.lock().map_err(|err| err.to_string())?;
-    Ok(import::rows_from(&buckets, &tags))
-}
-
-#[tauri::command]
-pub fn remove_subnet(
-    cidr: String,
-    session: State<'_, SessionStore>,
-    inventory: State<'_, InventoryStore>,
-    tags: State<'_, TagStore>,
-) -> Result<Vec<import::SubnetRow>, String> {
-    let subnet =
-        crate::split::Subnet::parse_cidr(&cidr).ok_or_else(|| "Unknown subnet.".to_string())?;
-    let snapshot = {
-        let mut session = session.0.lock().map_err(|err| err.to_string())?;
-        let mut candidate = session.clone();
-        if !candidate.remove(subnet) {
-            return Err("Unknown subnet.".into());
-        }
-        let snapshot = candidate.snapshot();
-        inventory.0.save(&snapshot)?;
-        *session = candidate;
-        snapshot
-    };
-    let tags = tags.0.lock().map_err(|err| err.to_string())?;
-    Ok(import::rows_from(&snapshot, &tags))
+fn emit_progress(app: &AppHandle, progress: RunProgress) {
+    let _ = app.emit(PROGRESS_EVENT, progress);
 }

@@ -3,6 +3,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use crate::secure_file;
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Tag(String);
 
@@ -25,12 +27,12 @@ struct Disk {
     tags: HashMap<String, Vec<String>>,
 }
 
-pub struct Store {
+pub struct TagBook {
     path: PathBuf,
     tags: HashMap<String, Vec<Tag>>,
 }
 
-impl Store {
+impl TagBook {
     pub fn load(path: PathBuf) -> Result<Self, String> {
         match read(&path) {
             Ok(tags) => Ok(Self { path, tags }),
@@ -92,9 +94,6 @@ fn read(path: &Path) -> Result<HashMap<String, Vec<Tag>>, std::io::Error> {
 }
 
 fn write(path: &Path, tags: &HashMap<String, Vec<Tag>>) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
     let disk = Disk {
         tags: tags
             .iter()
@@ -107,7 +106,7 @@ fn write(path: &Path, tags: &HashMap<String, Vec<Tag>>) -> Result<(), String> {
             .collect(),
     };
     let bytes = serde_json::to_vec_pretty(&disk).map_err(|err| err.to_string())?;
-    fs::write(path, bytes).map_err(|err| err.to_string())
+    secure_file::write_atomic(path, &bytes)
 }
 
 #[cfg(test)]
@@ -148,16 +147,16 @@ mod tests {
     #[test]
     fn store_roundtrips_and_clears_empty() {
         let (dir, path) = temp_store();
-        let mut store = Store::load(path.clone()).unwrap();
+        let mut store = TagBook::load(path.clone()).unwrap();
         store
             .set("192.0.2.0/24".into(), vec![Tag::parse("isp").unwrap()])
             .unwrap();
-        let reloaded = Store::load(path.clone()).unwrap();
+        let reloaded = TagBook::load(path.clone()).unwrap();
         assert_eq!(reloaded.get("192.0.2.0/24")[0].as_str(), "isp");
         assert!(reloaded.get("198.51.100.0/24").is_empty());
-        let mut store = Store::load(path.clone()).unwrap();
+        let mut store = TagBook::load(path.clone()).unwrap();
         store.set("192.0.2.0/24".into(), vec![]).unwrap();
-        let cleared = Store::load(path).unwrap();
+        let cleared = TagBook::load(path).unwrap();
         assert!(cleared.get("192.0.2.0/24").is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -167,7 +166,7 @@ mod tests {
         let (dir, path) = temp_store();
         fs::create_dir_all(&dir).unwrap();
         fs::write(&path, "{not json").unwrap();
-        assert!(Store::load(path).is_err());
+        assert!(TagBook::load(path).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 }

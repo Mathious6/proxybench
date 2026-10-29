@@ -1,59 +1,82 @@
-export function empty(value: string | number | null | undefined) {
-  return value === null || value === undefined || value === "";
+export type Tone = "good" | "bad" | "plain" | "muted" | "faint";
+
+const FAST_MS = 500;
+const SLOW_MS = 1500;
+const OK_HIGH = 0.8;
+const OK_LOW = 0.3;
+
+const whole = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const tenth = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+export const DASH = "—";
+
+export function count(value: number): string {
+  return whole.format(value);
 }
 
-const grouped = new Intl.NumberFormat(undefined, { useGrouping: true, maximumFractionDigits: 0 });
-const groupedTenth = new Intl.NumberFormat(undefined, {
-  useGrouping: true,
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-});
-
-export function dash(value: string | number | null | undefined) {
-  if (empty(value)) {
-    return "—";
-  }
-  if (typeof value === "number") {
-    return grouped.format(value);
-  }
-  return String(value);
+export function plural(value: number, one: string, many: string): string {
+  return `${count(value)} ${value === 1 ? one : many}`;
 }
 
-export function timing(value: number | null | undefined) {
-  if (empty(value)) {
-    return "—";
+export function timing(ms: number | null): string {
+  if (ms === null) {
+    return DASH;
   }
-  const ms = Math.round(value as number);
-  if (ms >= 1000) {
-    const seconds = ms / 1000;
-    if (seconds >= 10) {
-      return `${grouped.format(Math.round(seconds))} s`;
-    }
-    return `${groupedTenth.format(seconds)} s`;
+  if (ms < 1000) {
+    return `${whole.format(Math.round(ms))} ms`;
   }
-  return `${grouped.format(ms)} ms`;
+  const seconds = ms / 1000;
+  return seconds >= 10 ? `${whole.format(Math.round(seconds))} s` : `${tenth.format(seconds)} s`;
 }
 
-const probedAtFull = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-function pad2(value: number) {
+function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-export function lastProbe(value: number | null | undefined) {
-  if (empty(value)) {
-    return "—";
+export function stamp(at: number | null): string {
+  if (at === null) {
+    return DASH;
   }
-  const date = new Date(value as number);
-  return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const date = new Date(at);
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function lastProbeTitle(value: number | null | undefined) {
-  if (empty(value)) {
+export function stampTitle(at: number | null): string | undefined {
+  return at === null ? undefined : fullDate.format(at);
+}
+
+export function eta(seconds: number | null): string {
+  if (seconds === null) {
     return "";
   }
-  return probedAtFull.format(value as number);
+  return seconds < 60 ? `~${Math.max(1, seconds)}s` : `~${Math.round(seconds / 60)}m`;
+}
+
+export function p50Tone(ms: number | null): Tone {
+  if (ms === null) {
+    return "faint";
+  }
+  if (ms < FAST_MS) {
+    return "good";
+  }
+  return ms > SLOW_MS ? "bad" : "plain";
+}
+
+export function p95Tone(ms: number | null): Tone {
+  if (ms === null) {
+    return "faint";
+  }
+  return ms > SLOW_MS ? "bad" : "muted";
+}
+
+export function okTone(ok: number, tested: number): Tone {
+  if (tested <= 0) {
+    return "plain";
+  }
+  const ratio = ok / tested;
+  if (ratio >= OK_HIGH) {
+    return "good";
+  }
+  return ratio < OK_LOW ? "bad" : "plain";
 }

@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::dns;
-use crate::split::Subnet;
+use crate::subnet::Subnet;
 
 const ENDPOINT: &str = "https://api.country.is/";
 const TIMEOUT: Duration = Duration::from_secs(8);

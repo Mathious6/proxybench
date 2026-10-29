@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
-use crate::parse::ProxyLine;
+use crate::proxy::ProxyLine;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Subnet(Ipv4Addr);
 
 impl Subnet {
@@ -34,12 +34,12 @@ impl Subnet {
     }
 }
 
-pub struct Bucket {
+pub struct Group {
     pub subnet: Subnet,
     pub proxies: Vec<ProxyLine>,
 }
 
-pub fn by_slash24(proxies: Vec<ProxyLine>) -> Vec<Bucket> {
+pub fn by_slash24(proxies: Vec<ProxyLine>) -> Vec<Group> {
     let mut groups: BTreeMap<Subnet, Vec<ProxyLine>> = BTreeMap::new();
     for proxy in proxies {
         groups
@@ -49,7 +49,7 @@ pub fn by_slash24(proxies: Vec<ProxyLine>) -> Vec<Bucket> {
     }
     groups
         .into_iter()
-        .map(|(subnet, proxies)| Bucket { subnet, proxies })
+        .map(|(subnet, proxies)| Group { subnet, proxies })
         .collect()
 }
 

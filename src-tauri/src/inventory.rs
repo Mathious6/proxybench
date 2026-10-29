@@ -1,471 +1,395 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::parse::{self, ProxyLine};
-use crate::session::{self, StoredBucket, StoredMetrics, StoredProbe};
-use crate::split::{Bucket, Subnet};
+use crate::health::Health;
+use crate::measurement::Probe;
+use crate::proxy::ProxyLine;
+use crate::subnet::{Group, Subnet};
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct Disk {
-    buckets: Vec<DiskBucket>,
+#[derive(Clone)]
+pub struct Bucket {
+    pub subnet: Subnet,
+    pub proxies: Vec<ProxyLine>,
+    pub country: Option<String>,
+    pub health: Option<Health>,
+    pub probe: Option<Probe>,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct DiskBucket {
-    cidr: String,
-    country: Option<String>,
-    proxies: Vec<String>,
-    #[serde(default)]
-    last_run_at: Option<u64>,
-    #[serde(default)]
-    metrics: Option<DiskMetrics>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct DiskMetrics {
-    ok: usize,
-    connect_p50: Option<f64>,
-    connect_p95: Option<f64>,
-    ttfb_p50: Option<f64>,
-    ttfb_p95: Option<f64>,
-}
-
-pub struct Store {
-    path: PathBuf,
-}
-
-impl Store {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    pub fn load(&self) -> Result<Vec<StoredBucket>, String> {
-        match fs::read(&self.path) {
-            Ok(bytes) => decode(&bytes),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(err) => Err(err.to_string()),
-        }
-    }
-
-    pub fn save(&self, buckets: &[StoredBucket]) -> Result<(), String> {
-        let disk = Disk {
-            buckets: buckets.iter().map(to_disk).collect(),
+impl Bucket {
+    pub fn new(subnet: Subnet, proxies: Vec<ProxyLine>, country: Option<String>) -> Self {
+        let mut bucket = Self {
+            subnet,
+            proxies: Vec::new(),
+            country,
+            health: None,
+            probe: None,
         };
-        let bytes = serde_json::to_vec_pretty(&disk).map_err(json_error)?;
-        write_atomic(&self.path, &bytes)
+        bucket.absorb(proxies);
+        bucket
     }
-}
 
-fn to_disk(bucket: &StoredBucket) -> DiskBucket {
-    DiskBucket {
-        cidr: bucket.subnet.cidr(),
-        country: bucket.country.clone(),
-        proxies: bucket
-            .proxies
-            .iter()
-            .map(|proxy| proxy.source.clone())
-            .collect(),
-        last_run_at: bucket.last_probe.as_ref().map(|probe| probe.at),
-        metrics: bucket
-            .last_probe
-            .as_ref()
-            .and_then(|probe| probe.metrics.as_ref())
-            .map(to_disk_metrics),
-    }
-}
-
-fn to_disk_metrics(metrics: &StoredMetrics) -> DiskMetrics {
-    DiskMetrics {
-        ok: metrics.ok,
-        connect_p50: metrics.connect_p50,
-        connect_p95: metrics.connect_p95,
-        ttfb_p50: metrics.ttfb_p50,
-        ttfb_p95: metrics.ttfb_p95,
-    }
-}
-
-fn from_disk_metrics(metrics: DiskMetrics) -> StoredMetrics {
-    StoredMetrics {
-        ok: metrics.ok,
-        connect_p50: metrics.connect_p50,
-        connect_p95: metrics.connect_p95,
-        ttfb_p50: metrics.ttfb_p50,
-        ttfb_p95: metrics.ttfb_p95,
-    }
-}
-
-fn decode(bytes: &[u8]) -> Result<Vec<StoredBucket>, String> {
-    let disk: Disk = serde_json::from_slice(bytes).map_err(json_error)?;
-    let mut countries = HashMap::new();
-    let mut probes: HashMap<String, Option<StoredProbe>> = HashMap::new();
-    let mut stale = HashSet::new();
-    let mut groups: BTreeMap<Subnet, Vec<ProxyLine>> = BTreeMap::new();
-    for bucket in disk.buckets {
-        let Some(subnet) = Subnet::parse_cidr(&bucket.cidr) else {
-            continue;
-        };
-        let cidr = subnet.cidr();
-        if let Some(code) = bucket.country {
-            countries.insert(cidr.clone(), code);
-        }
-        let incoming: Vec<ProxyLine> = bucket
-            .proxies
-            .iter()
-            .filter_map(|line| parse_source(line, subnet))
-            .collect();
-        let grown = match groups.get(&subnet) {
-            Some(existing) => incoming
+    pub fn absorb(&mut self, incoming: Vec<ProxyLine>) -> usize {
+        let before = self.proxies.len();
+        for proxy in incoming {
+            if !self
+                .proxies
                 .iter()
-                .any(|proxy| !existing.iter().any(|item| item.source == proxy.source)),
-            None => false,
+                .any(|known| known.source == proxy.source)
+            {
+                self.proxies.push(proxy);
+            }
+        }
+        self.proxies.len() - before
+    }
+
+    pub fn clear_results(&mut self) {
+        self.health = None;
+        self.probe = None;
+    }
+}
+
+pub struct Merge {
+    pub added: Vec<String>,
+    pub grown: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct Inventory {
+    buckets: BTreeMap<Subnet, Bucket>,
+}
+
+impl Inventory {
+    pub fn restore(buckets: Vec<Bucket>) -> Self {
+        Self {
+            buckets: buckets
+                .into_iter()
+                .map(|bucket| (bucket.subnet, bucket))
+                .collect(),
+        }
+    }
+
+    pub fn merge(&mut self, groups: Vec<Group>, countries: &HashMap<String, String>) -> Merge {
+        let mut merge = Merge {
+            added: Vec::new(),
+            grown: Vec::new(),
         };
-        let probe = bucket.last_run_at.map(|at| StoredProbe {
-            at,
-            metrics: bucket.metrics.map(from_disk_metrics),
-        });
-        if grown {
-            stale.insert(cidr.clone());
-            probes.insert(cidr, None);
-        } else if !stale.contains(&cidr) {
-            match probes.get_mut(&cidr) {
-                Some(stored) => {
-                    if let Some(next) = probe {
-                        if stored
-                            .as_ref()
-                            .map(|current| next.at > current.at)
-                            .unwrap_or(true)
-                        {
-                            *stored = Some(next);
-                        }
+        for group in groups {
+            let cidr = group.subnet.cidr();
+            match self.buckets.get_mut(&group.subnet) {
+                Some(bucket) => {
+                    if bucket.country.is_none() {
+                        bucket.country = countries.get(&cidr).cloned();
+                    }
+                    if bucket.absorb(group.proxies) > 0 {
+                        bucket.clear_results();
+                        merge.grown.push(cidr);
                     }
                 }
                 None => {
-                    probes.insert(cidr, probe);
+                    let country = countries.get(&cidr).cloned();
+                    self.buckets.insert(
+                        group.subnet,
+                        Bucket::new(group.subnet, group.proxies, country),
+                    );
+                    merge.added.push(cidr);
                 }
             }
         }
-        let entry = groups.entry(subnet).or_default();
-        for proxy in incoming {
-            if !entry.iter().any(|item| item.source == proxy.source) {
-                entry.push(proxy);
+        merge
+    }
+
+    pub fn remove(&mut self, subnets: &[Subnet]) {
+        for subnet in subnets {
+            self.buckets.remove(subnet);
+        }
+    }
+
+    pub fn record_check(&mut self, subnet: Subnet, health: Health) {
+        if let Some(bucket) = self.buckets.get_mut(&subnet) {
+            bucket.health = Some(health);
+        }
+    }
+
+    pub fn record_probe(&mut self, subnet: Subnet, probe: Probe) {
+        if let Some(bucket) = self.buckets.get_mut(&subnet) {
+            bucket.health = Some(Health::new(probe.ok, probe.tested, probe.at));
+            bucket.probe = Some(probe);
+        }
+    }
+
+    pub fn record_countries(&mut self, countries: &HashMap<String, String>) {
+        for (cidr, country) in countries {
+            let Some(subnet) = Subnet::parse_cidr(cidr) else {
+                continue;
+            };
+            if let Some(bucket) = self.buckets.get_mut(&subnet) {
+                bucket.country = Some(country.clone());
             }
         }
     }
-    let buckets = groups
-        .into_iter()
-        .map(|(subnet, proxies)| Bucket { subnet, proxies })
-        .collect();
-    let mut session = session::Session::new();
-    session.merge(buckets, &countries);
-    for (cidr, probe) in probes {
-        if let Some(probe) = probe {
-            session.record_probe(&cidr, probe.at, probe.metrics);
-        }
+
+    pub fn get(&self, subnet: Subnet) -> Option<&Bucket> {
+        self.buckets.get(&subnet)
     }
-    Ok(session.snapshot())
+
+    pub fn buckets(&self) -> Vec<Bucket> {
+        self.buckets.values().cloned().collect()
+    }
+
+    pub fn scope(&self, cidrs: Option<Vec<String>>) -> Result<Vec<Bucket>, String> {
+        let Some(cidrs) = cidrs else {
+            return Ok(self.buckets());
+        };
+        let subnets = parse_subnets(&cidrs)?;
+        subnets
+            .into_iter()
+            .map(|subnet| {
+                self.buckets
+                    .get(&subnet)
+                    .cloned()
+                    .ok_or_else(|| "Unknown subnet.".to_string())
+            })
+            .collect()
+    }
 }
 
-fn parse_source(line: &str, subnet: Subnet) -> Option<ProxyLine> {
-    let (items, skipped) = parse::parse_text(&format!("{line}\n"));
-    if skipped > 0 || items.len() != 1 {
-        return None;
+pub fn parse_subnets(cidrs: &[String]) -> Result<BTreeSet<Subnet>, String> {
+    if cidrs.is_empty() {
+        return Err("Select at least one subnet.".into());
     }
-    let proxy = items.into_iter().next()?;
-    if Subnet::from_host(proxy.host) != subnet {
-        return None;
-    }
-    Some(proxy)
-}
-
-fn json_error(err: serde_json::Error) -> String {
-    format!(
-        "Could not read inventory (line {} column {})",
-        err.line(),
-        err.column()
-    )
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    crate::secure_file::write(&tmp, bytes).map_err(|err| err.to_string())?;
-    fs::rename(&tmp, path).map_err(|err| {
-        let _ = fs::remove_file(&tmp);
-        err.to_string()
-    })
+    cidrs
+        .iter()
+        .map(|cidr| Subnet::parse_cidr(cidr).ok_or_else(|| "Unknown subnet.".to_string()))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::subnet::by_slash24;
 
-    fn temp_store() -> (PathBuf, Store) {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "proxybench-inventory-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("proxies.json");
-        (dir, Store::new(path))
-    }
-
-    fn bucket(host: &str, country: Option<&str>, sources: &[&str]) -> StoredBucket {
-        StoredBucket {
-            subnet: Subnet::from_host(host.parse().unwrap()),
-            country: country.map(str::to_string),
-            proxies: sources
-                .iter()
-                .filter_map(|source| parse_source(source, Subnet::from_host(host.parse().unwrap())))
-                .collect(),
-            last_probe: None,
+    fn proxy(host: &str) -> ProxyLine {
+        ProxyLine {
+            host: host.parse().unwrap(),
+            port: 8080,
+            username: "user".into(),
+            password: "pass".into(),
+            source: format!("{host}:8080:user:pass"),
         }
     }
 
-    fn sample_metrics(ok: usize) -> StoredMetrics {
-        StoredMetrics {
+    fn spaced(host: &str) -> ProxyLine {
+        let mut padded = proxy(host);
+        padded.source = format!("  {host}:8080:user:pass  ");
+        padded
+    }
+
+    fn probe(at: u64, ok: usize, tested: usize) -> Probe {
+        Probe {
+            at,
             ok,
-            connect_p50: Some(12.5),
-            connect_p95: Some(40.0),
-            ttfb_p50: Some(80.0),
-            ttfb_p95: Some(120.0),
+            tested,
+            connect_p50: Some(10.0),
+            connect_p95: Some(20.0),
+            ttfb_p50: Some(30.0),
+            ttfb_p95: Some(40.0),
         }
     }
 
-    #[test]
-    fn save_then_load_roundtrips_verbatim_sources() {
-        let (dir, store) = temp_store();
-        store
-            .save(&[bucket(
-                "192.0.2.10",
-                Some("FR"),
-                &["  192.0.2.10:8080:user:p:ss  "],
-            )])
-            .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].country.as_deref(), Some("FR"));
-        assert_eq!(loaded[0].proxies[0].source, "  192.0.2.10:8080:user:p:ss  ");
-        assert_eq!(loaded[0].proxies[0].password, "p:ss");
-        let _ = fs::remove_dir_all(&dir);
+    fn subnet(host: &str) -> Subnet {
+        Subnet::from_host(host.parse().unwrap())
+    }
+
+    fn only_bucket(inventory: &Inventory) -> Bucket {
+        inventory.buckets().into_iter().next().unwrap()
     }
 
     #[test]
-    fn save_then_load_roundtrips_last_run_at() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: None,
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: None,
-            })
+    fn merge_reports_added_and_grown_subnets() {
+        let mut inventory = Inventory::default();
+        let first = inventory.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn save_then_load_roundtrips_metrics() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: Some(sample_metrics(4)),
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: Some(sample_metrics(4)),
-            })
+        assert_eq!(first.added, vec!["192.0.2.0/24", "198.51.100.0/24"]);
+        assert!(first.grown.is_empty());
+        let second = inventory.merge(
+            by_slash24(vec![
+                proxy("192.0.2.10"),
+                proxy("192.0.2.11"),
+                spaced("192.0.2.10"),
+                proxy("203.0.113.5"),
+            ]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(second.added, vec!["203.0.113.0/24"]);
+        assert_eq!(second.grown, vec!["192.0.2.0/24"]);
+        let grown = inventory.get(subnet("192.0.2.10")).unwrap();
+        assert_eq!(grown.proxies.len(), 3);
     }
 
     #[test]
-    fn save_then_load_roundtrips_all_failed_metrics() {
-        let (dir, store) = temp_store();
-        let mut item = bucket("192.0.2.10", Some("FR"), &["192.0.2.10:8080:user:pass"]);
-        item.last_probe = Some(StoredProbe {
-            at: 1_700_000_000_000,
-            metrics: Some(StoredMetrics {
-                ok: 0,
-                connect_p50: None,
-                connect_p95: None,
-                ttfb_p50: None,
-                ttfb_p95: None,
-            }),
-        });
-        store.save(&[item]).unwrap();
-        let loaded = store.load().unwrap();
-        let probe = loaded[0].last_probe.clone().unwrap();
-        assert_eq!(probe.at, 1_700_000_000_000);
-        let metrics = probe.metrics.unwrap();
-        assert_eq!(metrics.ok, 0);
-        assert_eq!(metrics.connect_p50, None);
-        assert_eq!(metrics.connect_p95, None);
-        assert_eq!(metrics.ttfb_p50, None);
-        assert_eq!(metrics.ttfb_p95, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_accepts_legacy_buckets_without_last_run_at() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_accepts_legacy_last_run_at_without_metrics() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":1700000000000}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 1_700_000_000_000,
-                metrics: None,
-            })
+    fn merge_keeps_known_country_and_fills_missing_one() {
+        let mut inventory = Inventory::default();
+        let mut countries = HashMap::new();
+        countries.insert("192.0.2.0/24".to_string(), "FR".to_string());
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &countries);
+        inventory.merge(by_slash24(vec![proxy("198.51.100.2")]), &HashMap::new());
+        let mut later = HashMap::new();
+        later.insert("192.0.2.0/24".to_string(), "US".to_string());
+        later.insert("198.51.100.0/24".to_string(), "DE".to_string());
+        inventory.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &later,
         );
-        let _ = fs::remove_dir_all(&dir);
+        let buckets = inventory.buckets();
+        assert_eq!(buckets[0].country.as_deref(), Some("FR"));
+        assert_eq!(buckets[1].country.as_deref(), Some("DE"));
     }
 
     #[test]
-    fn load_ignores_orphan_metrics_without_last_run_at() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"metrics":{"ok":3,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
+    fn merge_clears_health_and_probe_when_a_subnet_grows() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        inventory.record_probe(subnet("192.0.2.10"), probe(42, 1, 1));
+        assert!(only_bucket(&inventory).health.is_some());
+        assert!(only_bucket(&inventory).probe.is_some());
+        inventory.merge(by_slash24(vec![proxy("192.0.2.11")]), &HashMap::new());
+        let bucket = only_bucket(&inventory);
+        assert_eq!(bucket.health, None);
+        assert_eq!(bucket.probe, None);
     }
 
     #[test]
-    fn load_clears_probe_when_duplicate_cidr_grows() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":1700000000000,"metrics":{"ok":1,"connect_p50":10.0,"connect_p95":20.0,"ttfb_p50":30.0,"ttfb_p95":40.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.11:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 2);
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
+    fn merge_keeps_results_when_nothing_new_arrives() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        inventory.record_probe(subnet("192.0.2.10"), probe(42, 1, 1));
+        let merge = inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        assert!(merge.grown.is_empty());
+        assert_eq!(only_bucket(&inventory).probe, Some(probe(42, 1, 1)));
     }
 
     #[test]
-    fn load_keeps_probe_cleared_after_later_duplicate_of_grown_cidr() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":100,"metrics":{"ok":1,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.11:8080:user:pass"]},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":300,"metrics":{"ok":2,"connect_p50":5.0,"connect_p95":6.0,"ttfb_p50":7.0,"ttfb_p95":8.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 2);
-        assert_eq!(loaded[0].last_probe, None);
-        let _ = fs::remove_dir_all(&dir);
+    fn record_check_sets_health_and_leaves_probe() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        inventory.record_probe(subnet("192.0.2.10"), probe(1, 1, 1));
+        inventory.record_check(subnet("192.0.2.10"), Health::new(0, 2, 99));
+        let bucket = only_bucket(&inventory);
+        assert_eq!(bucket.health, Some(Health::new(0, 2, 99)));
+        assert_eq!(bucket.probe, Some(probe(1, 1, 1)));
     }
 
     #[test]
-    fn load_keeps_latest_probe_when_duplicate_cidr_is_unchanged() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":100,"metrics":{"ok":1,"connect_p50":1.0,"connect_p95":2.0,"ttfb_p50":3.0,"ttfb_p95":4.0}},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass"],"last_run_at":200,"metrics":{"ok":2,"connect_p50":5.0,"connect_p95":6.0,"ttfb_p50":7.0,"ttfb_p95":8.0}}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded[0].proxies.len(), 1);
-        assert_eq!(
-            loaded[0].last_probe,
-            Some(StoredProbe {
-                at: 200,
-                metrics: Some(StoredMetrics {
-                    ok: 2,
-                    connect_p50: Some(5.0),
-                    connect_p95: Some(6.0),
-                    ttfb_p50: Some(7.0),
-                    ttfb_p95: Some(8.0),
-                }),
-            })
+    fn record_probe_also_updates_health() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        inventory.record_probe(subnet("192.0.2.10"), probe(7, 3, 4));
+        assert_eq!(only_bucket(&inventory).health, Some(Health::new(3, 4, 7)));
+    }
+
+    #[test]
+    fn records_ignore_unknown_subnets() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        inventory.record_probe(subnet("198.51.100.2"), probe(1, 1, 1));
+        inventory.record_check(subnet("198.51.100.2"), Health::new(1, 1, 1));
+        assert_eq!(only_bucket(&inventory).probe, None);
+    }
+
+    #[test]
+    fn remove_drops_the_given_subnets_only() {
+        let mut inventory = Inventory::default();
+        inventory.merge(
+            by_slash24(vec![
+                proxy("192.0.2.10"),
+                proxy("198.51.100.2"),
+                proxy("203.0.113.9"),
+            ]),
+            &HashMap::new(),
         );
-        let _ = fs::remove_dir_all(&dir);
+        inventory.remove(&[subnet("192.0.2.10"), subnet("198.51.100.2")]);
+        assert_eq!(inventory.buckets().len(), 1);
+        assert_eq!(inventory.buckets()[0].subnet.cidr(), "203.0.113.0/24");
     }
 
     #[test]
-    fn load_missing_file_is_empty() {
-        let (dir, store) = temp_store();
-        assert!(store.load().unwrap().is_empty());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_rejects_invalid_json_without_source_text() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"192.0.2.0/24","country":null,"proxies":"192.0.2.10:8080:user:secret"}]}"#,
-        )
-        .unwrap();
-        let err = match store.load() {
-            Ok(_) => panic!("expected invalid json"),
-            Err(err) => err,
-        };
-        assert!(!err.contains("secret"));
-        assert!(!err.contains("user"));
-        assert!(err.contains("line"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_skips_corrupt_cidr_and_foreign_lines() {
-        let (dir, store) = temp_store();
-        fs::write(
-            dir.join("proxies.json"),
-            r#"{"buckets":[{"cidr":"not-a-cidr","country":null,"proxies":["bad"]},{"cidr":"192.0.2.0/24","country":"FR","proxies":["192.0.2.10:8080:user:pass","198.51.100.2:8080:user:pass"]}]}"#,
-        )
-        .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].proxies.len(), 1);
-        assert_eq!(
-            loaded[0].proxies[0].host,
-            "192.0.2.10".parse::<std::net::Ipv4Addr>().unwrap()
+    fn record_countries_refreshes_known_subnets_only() {
+        let mut inventory = Inventory::default();
+        let mut initial = HashMap::new();
+        initial.insert("192.0.2.0/24".to_string(), "FR".to_string());
+        initial.insert("198.51.100.0/24".to_string(), "DE".to_string());
+        inventory.merge(
+            by_slash24(vec![proxy("192.0.2.10"), proxy("198.51.100.2")]),
+            &initial,
         );
-        let _ = fs::remove_dir_all(&dir);
+        let mut refreshed = HashMap::new();
+        refreshed.insert("192.0.2.0/24".to_string(), "US".to_string());
+        refreshed.insert("203.0.113.0/24".to_string(), "NL".to_string());
+        inventory.record_countries(&refreshed);
+        let buckets = inventory.buckets();
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].country.as_deref(), Some("US"));
+        assert_eq!(buckets[1].country.as_deref(), Some("DE"));
+    }
+
+    #[test]
+    fn scope_none_returns_all_sorted() {
+        let mut inventory = Inventory::default();
+        inventory.merge(
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
+            &HashMap::new(),
+        );
+        let cidrs: Vec<_> = inventory
+            .scope(None)
+            .unwrap()
+            .iter()
+            .map(|bucket| bucket.subnet.cidr())
+            .collect();
+        assert_eq!(cidrs, vec!["192.0.2.0/24", "198.51.100.0/24"]);
+    }
+
+    #[test]
+    fn scope_deduplicates_and_sorts_requested_subnets() {
+        let mut inventory = Inventory::default();
+        inventory.merge(
+            by_slash24(vec![proxy("198.51.100.2"), proxy("192.0.2.10")]),
+            &HashMap::new(),
+        );
+        let cidrs: Vec<_> = inventory
+            .scope(Some(vec![
+                "198.51.100.0/24".into(),
+                "192.0.2.0/24".into(),
+                "198.51.100.0/24".into(),
+            ]))
+            .unwrap()
+            .iter()
+            .map(|bucket| bucket.subnet.cidr())
+            .collect();
+        assert_eq!(cidrs, vec!["192.0.2.0/24", "198.51.100.0/24"]);
+    }
+
+    #[test]
+    fn scope_rejects_empty_malformed_and_missing_subnets() {
+        let mut inventory = Inventory::default();
+        inventory.merge(by_slash24(vec![proxy("192.0.2.10")]), &HashMap::new());
+        assert_eq!(
+            inventory.scope(Some(Vec::new())).err().as_deref(),
+            Some("Select at least one subnet.")
+        );
+        assert_eq!(
+            inventory
+                .scope(Some(vec!["192.0.2.10/24".into()]))
+                .err()
+                .as_deref(),
+            Some("Unknown subnet.")
+        );
+        assert_eq!(
+            inventory
+                .scope(Some(vec!["198.51.100.0/24".into()]))
+                .err()
+                .as_deref(),
+            Some("Unknown subnet.")
+        );
     }
 }

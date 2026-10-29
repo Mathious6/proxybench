@@ -1,154 +1,131 @@
-# proxybench
+# Repository Guide
 
-Desktop app (Tauri 2 + Svelte 5) that splits HTTP proxy lists by `/24` and
-measures Connect + TTFB per subnet.
+- This guide never cites code: no paths, symbols or snippets. The code is the reference; read it before acting.
+- Keep everything simple: this guide, the code and the stack. When in doubt, choose the option with fewer parts.
 
-`README.md` is what and why for people installing the app. This file is how
-to work here.
+## Guide Governance
 
-## Privacy
+- This guide is under human supervision. Never edit it unless the owner asks; propose changes in your report instead.
+- Every line is a bullet of 30 words at most: no paragraphs, tables, code blocks or nested bullets.
+- State principles that survive refactors. If a bullet breaks when code is renamed, it is wrong.
+- Describe the current rule only: no history, dates, versions shipped or "previously".
+- One fact, one place. The README is the product page for people installing the app; this guide is how to work here.
+- Add a bullet only when an agent would otherwise get it wrong. Keep each section under about ten bullets, Resources excepted.
 
-Public trackers, pull requests, commit messages, tests, release notes, and
-docs must never contain infrastructure details (internal IPs, resolver
-addresses, VPN or network topology) or account data (subnet lists,
-credentials). Describe failures generically — "the VPN resolver", "a stuck
-subnet" — never the specific values.
+## Priorities
+
+- When rules conflict, decide in this order: privacy, correctness of measurements, simplicity, reuse of what exists, performance.
+- When code contradicts this guide, the guide wins: fix the code you touch in the same change.
+- When the guide is silent, follow the linked resources, then the closest existing code, then ask.
+
+## Build Mode
+
+- No external client or API depends on this app: breaking changes are free. Optimize for the clearest design, never for continuity.
+- No legacy support: no aliases, shims, migrations of internal formats, compatibility flags or dual implementations. Change every caller in the same change.
+- The owner's local inventory and tags files must keep loading; new fields default, removed fields are ignored.
+- Zero references to replaced code or past choices, in code, tests, names or docs. Git history is the archive.
 
 ## Product
 
-One window, not resizable. One workflow:
+- One fixed-size window, one page, dark only. A small desktop tool for people who manage HTTP proxy lists by IPv4 /24.
+- Accepted line format is host:port:user:pass, HTTP proxies, IPv4 hosts. Everything else is skipped and counted.
+- Two run verbs only: Check proves a /24 is alive through a few proxies; Probe measures Connect and TTFB through every proxy.
+- Check runs on launch and after import when enabled in Settings. Settings own the target, limits, timeout and check sample.
+- Connect ends when the proxy answers CONNECT with 200. TTFB ends when origin headers arrive. Bodies are never read; connections are never reused.
+- Failed probes are dropped from percentiles and counted against OK. Growing a /24 clears its health and probe results.
+- Export writes the source lines verbatim, named by tags, country and subnet; several subnets bundle into one archive. AYCD JSON is the only other format.
+- Colour is emphasis, never a score: health uses dots, timings colour only outliers, OK colours on success ratio.
 
-1. Drop a `.txt` file or a folder of `.txt` files, or Open files
-   (`host:port:user:pass` HTTP only).
-2. Table of IPv4 `/24` subnets. Country lookup batches missing imports and
-   refreshes every probed subnet before speed measurements. Tags persist by CIDR.
-   Inventory persists locally; Open files appends. Last probe metrics persist
-   until that `/24` gains lines. The last HTTPS target is remembered.
-3. Select `/24`s with click, Cmd/Ctrl-click, or Shift-click across the current
-   sorted and filtered rows; Cmd/Ctrl-A selects all filtered rows and Escape
-   clears selection. Selections persist through sort, filter, and pages.
-   Probe all, selected, or one `/24` → OK + Connect p50/p95 + TTFB
-   p50/p95 + last probe. 5 s timeout, 5 starts/s, 32 in flight.
-4. Export `[{tags}_]{CC}_{IP}_24_{qty}.txt`. Untagged files start with the
-   country code. No country → `XX`. The Export menu also writes one AYCD JSON
-   file for the same scope, categorized by the TXT filename stem.
-5. Filter sits with Open files, Export, and Probe all. Toolbar Probe and
-   Export act on selected rows when present. Probe progress and the version
-   sit in the bottom bar. 15 subnets per page. Right-click a selected row to
-   Probe or Export the selection; otherwise those actions apply to that row.
-   The Export menu includes AYCD JSON. Remove always applies to that row.
+## Out Of Scope
 
-Probe is the only action verb for a run. Anything else is out of scope until
-asked.
+- SOCKS, proxy URLs, hostnames, IPv6, extra line formats, multi-target runs, ASN, DNS or TLS columns, status or error columns.
+- Quality scores, bypass claims, a web server, a bundled geolocation database, Linux installers, extra pages, window resize.
 
-## Code
+## Simplicity
 
-- Zero comments. Names and structure carry the meaning. The only allowed
-  comment is `// MARK:` for section markers, plus one line when an external
-  quirk cannot be encoded in code.
-- One concern per file. Size follows cohesion. Split on mixed concerns, never
-  on line count.
-- Precise domain types: proxy line, subnet, tag. Not bare strings for those.
-- Rust owns parse, split, country, probe, export, inventory, tags, and last
-  target. App data files: `proxies.json`, `tags.json`, `last-target.txt`.
-- Svelte is a thin view over Tauri commands. No parse, split, or probe logic
-  in the frontend. Svelte 5 runes (`$state`, `$derived`, `$props`, `$effect`).
-  One page, no router.
-- Credentials never appear in the UI, logs, errors, or exported HTML.
-- English for identifiers, docs, commits, and UI copy.
-- Colour is emphasis, not a score: Connect/TTFB green under 500 ms, red over
-  1500 ms; OK green at 80% success, red below 30%.
+- Write the fewest features, branches and edge cases that satisfy a real need. Deleting code is progress.
+- SOLID in practice: one reason to change per module, narrow interfaces, dependencies passed in, never reached for globally.
+- Prefer few complete, cohesive files over many fragments. Split only on mixed concerns, never on line count.
+- Side effects live at the boundaries. Untrusted input, files and IPC payloads, is parsed once at the edge into domain types, then trusted.
+- Make illegal states unrepresentable: closed enums and newtypes for proxy line, subnet, tag, target, health and settings; never bare strings or flag pairs.
 
-## Stack
+## Naming
 
-| Layer   | Choice                                                                 | Not                                   |
-| ------- | ---------------------------------------------------------------------- | ------------------------------------- |
-| Package | bun 1.3.14                                                             | npm, yarn, pnpm                       |
-| Rust    | 1.88.0 via `rust-toolchain.toml`                                       | floating stable                       |
-| Shell   | Tauri 2                                                                | egui, iced, Electron                  |
-| UI      | Svelte 5 + Tailwind 4 + TanStack Table                                 | router, extra pages, component kits   |
-| Probe   | tokio + HTTP CONNECT + rustls (ring) + hyper HTTP/1                    | reqwest, libcurl, isahc               |
-| Country | `POST https://api.country.is/` in direct (`ureq`) batches of at most 100 IPs | through-proxy lookup, GeoLite in-repo |
-| Tags    | local JSON keyed by CIDR                                               | filename-as-identity                  |
+- One concept, one name, everywhere: Rust, TypeScript, UI copy and README use the same words.
+- Modules are named after their concept; functions after the action they perform, as a verb.
+- No vague names: no Manager, Helper, Util, Handler or Service suffixes, no data, info, item or obj.
 
-Connect = TCP to the proxy + CONNECT `200`, before origin TLS.
-TTFB = same start Instant until origin HTTP/1 headers; body is never read.
-Failed probes are dropped from percentiles. OK is the success count. No
-connection reuse. Each probe times out after 5 seconds.
+## Never
 
-## Do not
+- No catch-all utility modules, factories, event buses, speculative layers or abstraction built for one case.
+- No boolean parameters: write two functions or model the choice as an enum.
+- No comments, doc comments included. Only section markers, and one line when an external quirk cannot be encoded in code.
+- No dead code, commented-out code, unused exports or features kept for later.
 
-- SOCKS, URL proxy lines, extra formats, hostname hosts
-- Multi-target, `targets.csv`, ASN, DNS/TLS columns, status/error columns
-- Quality scores, bypass claims, a web server
-- `reqwest` on the speed path
-- Ship a MaxMind database
-- Linux installers, extra pages, window resize
-- `git add -A` / `git add .`
+## Architecture
 
-## Docs
+- Rust owns every rule: parsing, grouping, country lookup, check, probe, scheduling, inventory, tags, settings, export and persistence.
+- The frontend is a thin view over Tauri commands and events. It holds view state only: sort, filter, selection, page, open dialogs.
+- One frontend module talks to Tauri. A credential-free fixture stands in for it in a plain browser, for development and screenshots.
+- App data lives in the platform app data directory as small JSON files written atomically with owner-only permissions.
+- The probe path is tokio, hyper HTTP/1 and rustls with ring. Never a high-level HTTP client there.
+- Country lookup is a direct HTTPS batch request, never through a proxy, and never blocks the table from rendering.
 
-- `README.md` is the product page: install and use, no toolchain. Hero
-  assets live in `docs/assets/` (app icon + window screenshot).
-- This file is how to work here. Do not duplicate README copy.
-- Never restate code logic in docs. Update docs in the same change as the
-  behaviour they describe.
-- No horizontal rules, no emoji in docs.
+## Technologies
 
-## Tests
+- Tauri 2 shell. Svelte 5 runes on plain Vite, no SvelteKit, no router. Plain CSS custom properties and scoped styles.
+- No component kits, table libraries or CSS frameworks: native dialog, inputs and a small hand-written menu cover the UI.
+- bun for JavaScript, cargo for Rust with the toolchain pinned in the repository. Never npm, yarn or pnpm.
+- Minimum technologies: one tool per job. Adding a dependency needs the owner's approval; removing one is always welcome.
+- Read version-matched official docs before using a framework API. Prefer documented seams over copied internals.
 
-- Domain only: parse, split, probe timings, inventory, export. No UI tests
-  unless asked.
-- Tests live beside the code they cover. Name the case.
-- CI lints and tests every pull request and `main`.
+## Privacy
 
-```text
-bun run check
-bun run build
-cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
-cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
-```
+- Credentials never appear in the UI, logs, errors, notices or anything except exported files.
+- Public issues, pull requests, commits, tests, release notes and docs never contain infrastructure details or account data.
+- Describe failures generically, such as "the VPN resolver" or "a stuck subnet", never with addresses, subnet lists or credentials.
+- Test fixtures use documentation address ranges and fake credentials only.
 
-Run `bun run screenshot` to refresh `docs/assets/screenshot.png` from the real
-page using its credential-free `?screenshot=1` fixture; the command starts and
-stops its own Vite server and browser. The 2240 by 1312 image captures the
-1120 by 656 webview content at 2x; the remaining 32px of the 1120 by 688 Tauri
-window is native title chrome and is not captured.
+## Verification
 
-## Commits
+- Tests cover the domain contract: parsing, grouping, health, scheduling, timings, inventory, settings and export. No UI tests unless asked.
+- Tests live beside the code they cover, named after the behaviour.
+- Agents verify UI with the Helium browser against the dev server on the fixture: drive the screen, read console errors, check every state.
+- Then run the real app with `bun run tauri dev` and confirm launch, check, settings and import end to end.
+- Before handing back, run `bun run check`, `bun run build`, cargo fmt check, clippy with warnings denied and the library tests. Report actual results.
+- `bun run screenshot` refreshes the README screenshot from the fixture; it manages its own server and browser.
+- Reread your diff and remove anything not needed.
 
-- [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
-  `type(scope): summary`.
-- Stage explicit paths. Review `git diff --cached` before committing.
-- Atomic commits, one purpose each.
-- Call @oracle for a review before EVERY commit.
+## Working Safely
 
-## Agents
+- Inspect Git status before editing. Preserve the owner's uncommitted changes; ask when ownership is unclear.
+- Dedicated branch and pull request. Never reset, amend, rebase, force-push or discard work without authorization.
+- Stage explicit paths only, never everything. Inspect the staged diff before committing.
+- Conventional Commits: type, scope, imperative summary. Atomic commits, one purpose each.
+- Ask the oracle agent to review the staged diff of risky changes before committing.
+- Plans stay outside the repository and outside commits. Sub-agents never share files or delegate further.
 
-- @designer for visual and interaction decisions. Window chrome, table
-  density, and copy stay with the current UI.
-- @oracle for high-risk technical advice and for that pre-commit review.
-- @explorer / @librarian when discovery or current docs beat guessing.
-- bun for JS; cargo via `src-tauri/Cargo.toml`. `bun run tauri dev` to run
-  the app.
+## Release
 
-## Ship
+- Bump the package manifest, the Tauri configuration and the Rust manifest to the same version, merge to main, then tag it.
+- The release workflow builds signed, notarized macOS images for Apple Silicon and Intel and an unsigned Windows installer, plus updater metadata.
+- Never replace published release assets; ship a higher patch version. Publishing needs the owner's go-ahead.
 
-Bump `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`
-to the same `X.Y.Z`, merge to `main`, then tag `vX.Y.Z`.
+## Language
 
-GitHub Actions (`.github/workflows/ci.yml` on `main` and pull requests,
-`.github/workflows/release.yml` on `vX.Y.Z`) builds Developer ID signed and
-Apple-notarized macOS DMGs for Apple Silicon and Intel and an unsigned Windows
-NSIS setup wizard.
+- English for identifiers, docs, commits and UI copy. No emoji and no horizontal rules in docs.
 
-Updater releases require `TAURI_SIGNING_PRIVATE_KEY` and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The workflow keeps releases as drafts
-until `latest.json` contains macOS arm64, macOS x64, and Windows x64. Never
-replace published assets; ship a higher patch version.
+## Resources
 
-macOS releases require `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
-`APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`, `APPLE_API_ISSUER`, and
-`APPLE_API_PRIVATE_KEY`. The certificate and API private key are base64
-encoded. Apple code signing is independent from updater signing.
+- Tauri 2: https://v2.tauri.app/
+- Tauri commands and events: https://v2.tauri.app/develop/calling-rust/
+- Svelte 5 runes: https://svelte.dev/docs/svelte/what-are-runes
+- Vite: https://vite.dev/guide/
+- hyper client connections: https://docs.rs/hyper/latest/hyper/client/conn/http1/index.html
+- rustls: https://docs.rs/rustls/latest/rustls/
+- country.is API: https://country.is
+- Simple design rules: https://martinfowler.com/bliki/BeckDesignRules.html
+- YAGNI: https://martinfowler.com/bliki/Yagni.html
+- Parse, do not validate: https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/
+- SOLID: https://en.wikipedia.org/wiki/SOLID
+- Conventional Commits: https://www.conventionalcommits.org/en/v1.0.0/

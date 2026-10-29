@@ -35,3 +35,15 @@ pub fn open_truncating(path: &Path) -> std::io::Result<std::fs::File> {
         .truncate(true)
         .open(path)
 }
+
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let staging = path.with_extension("tmp");
+    write(&staging, bytes).map_err(|err| err.to_string())?;
+    fs::rename(&staging, path).map_err(|err| {
+        let _ = fs::remove_file(&staging);
+        err.to_string()
+    })
+}

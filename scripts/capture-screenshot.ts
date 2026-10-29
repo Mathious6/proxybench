@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDirectory, "..");
 const port = 1430;
-const url = `http://127.0.0.1:${port}/?screenshot=1`;
+const url = `http://127.0.0.1:${port}/`;
 const output = resolve(projectRoot, "docs/assets/screenshot.png");
 const playwrightCli = resolve(projectRoot, "node_modules/playwright/cli.js");
 const viteCli = resolve(projectRoot, "node_modules/vite/bin/vite.js");
@@ -78,10 +78,17 @@ try {
   });
   const page = await context.newPage();
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('html[data-screenshot-ready="true"]');
+  await page.waitForSelector("footer .run");
+  await page.waitForSelector("footer .run", { state: "detached" });
+  await page.waitForSelector("footer .notice", { state: "detached" });
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
+  const rows = page.locator("tbody tr");
+  await rows.nth(0).locator("td").first().click();
+  await rows.nth(2).locator("td").first().click({ modifiers: ["Shift"] });
+  await page.mouse.move(1100, 640);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.addStyleTag({
     content: "*, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; }",
   });

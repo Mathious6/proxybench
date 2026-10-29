@@ -6,23 +6,31 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Empty;
+use hyper::body::Incoming;
 use hyper::header::{HeaderValue, HOST};
-use hyper::{Method, Request, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-use crate::parse::ProxyLine;
+use crate::proxy::ProxyLine;
 use crate::target::Target;
-
-pub const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
     pub connect: Duration,
     pub ttfb: Duration,
+}
+
+impl Sample {
+    fn connect_only(connect: Duration) -> Self {
+        Self {
+            connect,
+            ttfb: connect,
+        }
+    }
 }
 
 pub fn connector() -> TlsConnector {
@@ -31,19 +39,21 @@ pub fn connector() -> TlsConnector {
     connector_with_roots(roots)
 }
 
-pub async fn measure(proxy: &ProxyLine, target: &Target, tls: &TlsConnector) -> Result<Sample, ()> {
-    measure_within(proxy, target, tls, TIMEOUT).await
-}
-
-async fn measure_within(
+pub async fn measure(
     proxy: &ProxyLine,
     target: &Target,
     tls: &TlsConnector,
     deadline: Duration,
-) -> Result<Sample, ()> {
+) -> Option<Sample> {
     tokio::time::timeout(deadline, measure_inner(proxy, target, tls))
         .await
-        .unwrap_or(Err(()))
+        .ok()?
+}
+
+pub async fn check(proxy: &ProxyLine, target: &Target, deadline: Duration) -> Option<Sample> {
+    tokio::time::timeout(deadline, check_inner(proxy, target))
+        .await
+        .ok()?
 }
 
 fn connector_with_roots(roots: rustls::RootCertStore) -> TlsConnector {
@@ -55,18 +65,17 @@ fn connector_with_roots(roots: rustls::RootCertStore) -> TlsConnector {
     TlsConnector::from(Arc::new(config))
 }
 
-async fn measure_inner(
+async fn open_tunnel(
     proxy: &ProxyLine,
     target: &Target,
-    tls: &TlsConnector,
-) -> Result<Sample, ()> {
-    let started = Instant::now();
+    started: Instant,
+) -> Option<(Response<Incoming>, Duration)> {
     let addr = SocketAddr::from((proxy.host, proxy.port));
-    let stream = TcpStream::connect(addr).await.map_err(|_| ())?;
+    let stream = TcpStream::connect(addr).await.ok()?;
     let _ = stream.set_nodelay(true);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
-        .map_err(|_| ())?;
+        .ok()?;
     tokio::spawn(async move {
         let _ = conn.with_upgrades().await;
     });
@@ -74,28 +83,38 @@ async fn measure_inner(
         "Basic {}",
         BASE64.encode(format!("{}:{}", proxy.username, proxy.password))
     ))
-    .map_err(|_| ())?;
+    .ok()?;
     let connect = Request::builder()
         .method(Method::CONNECT)
         .uri(target.authority())
         .header(HOST, target.authority())
         .header("Proxy-Authorization", auth)
         .body(Empty::<Bytes>::new())
-        .map_err(|_| ())?;
-    let response = sender.send_request(connect).await.map_err(|_| ())?;
+        .ok()?;
+    let response = sender.send_request(connect).await.ok()?;
     if response.status() != StatusCode::OK {
-        return Err(());
+        return None;
     }
-    let connect = started.elapsed();
-    let upgraded = hyper::upgrade::on(response).await.map_err(|_| ())?;
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| ())?;
+    Some((response, started.elapsed()))
+}
+
+async fn check_inner(proxy: &ProxyLine, target: &Target) -> Option<Sample> {
+    let (_response, connect) = open_tunnel(proxy, target, Instant::now()).await?;
+    Some(Sample::connect_only(connect))
+}
+
+async fn measure_inner(proxy: &ProxyLine, target: &Target, tls: &TlsConnector) -> Option<Sample> {
+    let started = Instant::now();
+    let (response, connect) = open_tunnel(proxy, target, started).await?;
+    let upgraded = hyper::upgrade::on(response).await.ok()?;
+    let server_name = ServerName::try_from(target.host.clone()).ok()?;
     let tls_stream = tls
         .connect(server_name, TokioIo::new(upgraded))
         .await
-        .map_err(|_| ())?;
+        .ok()?;
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls_stream))
         .await
-        .map_err(|_| ())?;
+        .ok()?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
@@ -105,11 +124,11 @@ async fn measure_inner(
         .header(HOST, target.host_header())
         .header("Connection", "close")
         .body(Empty::<Bytes>::new())
-        .map_err(|_| ())?;
-    let response = sender.send_request(request).await.map_err(|_| ())?;
+        .ok()?;
+    let response = sender.send_request(request).await.ok()?;
     let ttfb = started.elapsed();
     drop(response);
-    Ok(Sample { connect, ttfb })
+    Some(Sample { connect, ttfb })
 }
 
 #[cfg(test)]
@@ -190,6 +209,8 @@ mod tests {
         }
     }
 
+    const LONG: Duration = Duration::from_secs(5);
+
     #[tokio::test]
     async fn measure_times_connect_before_tls_and_accepts_any_headers() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -205,6 +226,7 @@ mod tests {
             &proxy(port),
             &Target::parse("https://localhost/status").unwrap(),
             &tls,
+            LONG,
         )
         .await
         .unwrap();
@@ -216,44 +238,124 @@ mod tests {
     async fn measure_fails_when_connect_is_not_200() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let tls = connector();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let _ = read_headers(&mut stream).await;
-            stream
-                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
-                .await
-                .unwrap();
-        });
+        let server = tokio::spawn(reply_once(
+            listener,
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n",
+        ));
         assert!(measure(
             &proxy(port),
             &Target::parse("https://localhost/").unwrap(),
-            &tls
+            &connector(),
+            LONG,
         )
         .await
-        .is_err());
+        .is_none());
         server.await.unwrap();
     }
 
     #[tokio::test]
-    async fn measure_fails_after_five_second_timeout() {
+    async fn measure_fails_after_the_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let tls = connector();
         let server = tokio::spawn(async move {
             let _stream = listener.accept().await.unwrap();
             tokio::time::sleep(Duration::from_secs(30)).await;
         });
         let started = Instant::now();
-        assert!(measure_within(
+        assert!(measure(
             &proxy(port),
             &Target::parse("https://localhost/").unwrap(),
-            &tls,
+            &connector(),
             Duration::from_millis(200),
         )
         .await
-        .is_err());
+        .is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
+        server.abort();
+    }
+
+    async fn reply_once(listener: TcpListener, response: &'static [u8]) {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_headers(&mut stream).await;
+        stream.write_all(response).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_succeeds_on_connect_200_and_closes_without_tls() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let headers = read_headers(&mut stream).await;
+            let text = String::from_utf8_lossy(&headers).to_ascii_lowercase();
+            assert!(text.starts_with("connect localhost:443 "));
+            assert!(text.contains("proxy-authorization: basic "));
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            let mut rest = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut rest))
+                .await
+                .expect("check closed the tunnel")
+                .unwrap();
+            assert!(rest.is_empty());
+        });
+        let sample = check(
+            &proxy(port),
+            &Target::parse("https://localhost/").unwrap(),
+            LONG,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sample.connect, sample.ttfb);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_connect_is_not_200() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(reply_once(listener, b"HTTP/1.1 502 Bad Gateway\r\n\r\n"));
+        assert!(check(
+            &proxy(port),
+            &Target::parse("https://localhost/").unwrap(),
+            LONG,
+        )
+        .await
+        .is_none());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_nothing_listens() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(check(
+            &proxy(port),
+            &Target::parse("https://localhost/").unwrap(),
+            LONG,
+        )
+        .await
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn check_fails_after_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let _stream = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        assert!(check(
+            &proxy(port),
+            &Target::parse("https://localhost/").unwrap(),
+            Duration::from_millis(200),
+        )
+        .await
+        .is_none());
         server.abort();
     }
 }
