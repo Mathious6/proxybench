@@ -4,8 +4,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::export;
-use crate::session::StoredBucket;
-use crate::tags::Store;
+use crate::inventory::Bucket;
+use crate::tag::TagBook;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +22,7 @@ struct Proxy {
     kind: &'static str,
 }
 
-pub fn write(path: &Path, buckets: &[StoredBucket], tags: &Store) -> Result<usize, String> {
+pub fn write(path: &Path, buckets: &[Bucket], tags: &TagBook) -> Result<usize, String> {
     if buckets.is_empty() {
         return Err("Import proxies before exporting.".into());
     }
@@ -70,24 +70,23 @@ fn io_error(path: &Path, err: std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ProxyLine;
-    use crate::split::Subnet;
-    use crate::tags::Tag;
+    use crate::proxy::ProxyLine;
+    use crate::subnet::Subnet;
+    use crate::tag::Tag;
     use std::fs;
 
-    fn bucket(host: &str, country: Option<&str>, password: &str) -> StoredBucket {
-        StoredBucket {
-            subnet: Subnet::from_host(host.parse().unwrap()),
-            proxies: vec![ProxyLine {
+    fn bucket(host: &str, country: Option<&str>, password: &str) -> Bucket {
+        Bucket::new(
+            Subnet::from_host(host.parse().unwrap()),
+            vec![ProxyLine {
                 host: host.parse().unwrap(),
                 port: 8080,
                 username: "user".into(),
                 password: password.into(),
                 source: String::new(),
             }],
-            country: country.map(str::to_owned),
-            last_probe: None,
-        }
+            country.map(str::to_owned),
+        )
     }
 
     fn temp_path() -> std::path::PathBuf {
@@ -106,7 +105,7 @@ mod tests {
     fn write_serializes_aycd_schema_with_categories_and_unique_v4_ids() {
         let path = temp_path();
         let tags_path = temp_path();
-        let mut tags = Store::load(tags_path.clone()).unwrap();
+        let mut tags = TagBook::load(tags_path.clone()).unwrap();
         tags.set(
             "192.0.2.0/24".into(),
             vec![Tag::parse("Residential").unwrap()],
@@ -147,7 +146,7 @@ mod tests {
         let expected = json_path(&path);
         assert!(expected.to_string_lossy().ends_with(".txt.json"));
         let tags_path = temp_path();
-        let tags = Store::load(tags_path.clone()).unwrap();
+        let tags = TagBook::load(tags_path.clone()).unwrap();
         write(
             &path,
             &[bucket("192.0.2.10", Some("FR"), &credential())],
@@ -165,7 +164,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let path = temp_path();
         let tags_path = temp_path();
-        let tags = Store::load(tags_path.clone()).unwrap();
+        let tags = TagBook::load(tags_path.clone()).unwrap();
         write(
             &path,
             &[bucket("192.0.2.10", Some("FR"), &credential())],

@@ -1,25 +1,32 @@
 mod archive;
 mod aycd;
+mod cancel;
+mod clock;
 mod commands;
 mod country;
 mod dns;
 mod export;
+mod health;
 mod import;
 mod inventory;
-mod last_target;
-mod parse;
+mod inventory_file;
+mod library;
+mod measurement;
 mod probe;
+mod proxy;
 mod run;
+mod sample;
 mod secure_file;
-mod session;
-mod split;
+mod settings;
+mod slot;
+mod state;
 mod stats;
-mod tags;
+mod subnet;
+mod tag;
 mod target;
+mod wire;
+mod workflow;
 
-use commands::LastTarget;
-use import::{InventoryStore, TagStore};
-use session::{Session, SessionStore};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,25 +37,22 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let store = import::open_store(app.handle())?;
-            let inventory = import::open_inventory(app.handle())?;
-            let last = commands::open_last_target(app.handle())?;
-            let session = Session::restore(inventory.load()?);
-            app.manage(TagStore(std::sync::Mutex::new(store)));
-            app.manage(SessionStore(std::sync::Mutex::new(session)));
-            app.manage(InventoryStore(inventory));
-            app.manage(LastTarget(last));
+            let dir = app.path().app_data_dir()?;
+            app.manage(state::AppState::open(&dir)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            import::import_paths,
-            import::set_tags,
-            commands::last_target,
-            commands::start_run,
-            commands::export_dir,
-            commands::export_aycd,
-            commands::session_rows,
-            commands::remove_subnet
+            commands::rows,
+            commands::import_paths,
+            commands::set_tags,
+            commands::remove,
+            commands::settings,
+            commands::save_settings,
+            commands::check,
+            commands::probe,
+            commands::stop,
+            commands::export_txt,
+            commands::export_aycd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,14 +2,14 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
-use crate::session::StoredBucket;
-use crate::tags::{Store, Tag};
+use crate::inventory::Bucket;
+use crate::tag::{Tag, TagBook};
 
-pub fn filename(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> String {
+pub fn filename(tags: &[Tag], country: Option<&str>, bucket: &Bucket) -> String {
     format!("{}.txt", category(tags, country, bucket))
 }
 
-pub fn category(tags: &[Tag], country: Option<&str>, bucket: &StoredBucket) -> String {
+pub fn category(tags: &[Tag], country: Option<&str>, bucket: &Bucket) -> String {
     let country = country
         .and_then(valid_country)
         .unwrap_or_else(|| "XX".into());
@@ -59,7 +59,7 @@ struct Bundle {
     entries: Vec<(String, String)>,
 }
 
-fn bundle(buckets: &[StoredBucket], tags: &Store) -> Result<Bundle, String> {
+fn bundle(buckets: &[Bucket], tags: &TagBook) -> Result<Bundle, String> {
     if buckets.is_empty() {
         return Err("Import proxies before exporting.".into());
     }
@@ -87,7 +87,7 @@ fn bundle(buckets: &[StoredBucket], tags: &Store) -> Result<Bundle, String> {
     })
 }
 
-fn bundle_filename(buckets: &[StoredBucket], tags: &Store, total: usize) -> String {
+fn bundle_filename(buckets: &[Bucket], tags: &TagBook, total: usize) -> String {
     format!(
         "{}_{}subnets_{}proxies_{}.zip",
         bundle_prefix(buckets, tags),
@@ -97,7 +97,7 @@ fn bundle_filename(buckets: &[StoredBucket], tags: &Store, total: usize) -> Stri
     )
 }
 
-fn fingerprint(buckets: &[StoredBucket]) -> String {
+fn fingerprint(buckets: &[Bucket]) -> String {
     let mut cidrs: Vec<String> = buckets.iter().map(|b| b.subnet.cidr()).collect();
     cidrs.sort();
     let mut hasher = DefaultHasher::new();
@@ -105,7 +105,7 @@ fn fingerprint(buckets: &[StoredBucket]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn bundle_prefix(buckets: &[StoredBucket], tags: &Store) -> String {
+fn bundle_prefix(buckets: &[Bucket], tags: &TagBook) -> String {
     if let Some(stem) = uniform_tag_stem(buckets, tags) {
         return stem;
     }
@@ -115,7 +115,7 @@ fn bundle_prefix(buckets: &[StoredBucket], tags: &Store) -> String {
     "MIXED".into()
 }
 
-fn uniform_tag_stem(buckets: &[StoredBucket], tags: &Store) -> Option<String> {
+fn uniform_tag_stem(buckets: &[Bucket], tags: &TagBook) -> Option<String> {
     let mut stems = buckets
         .iter()
         .map(|bucket| tag_stem(&tags.get(&bucket.subnet.cidr())));
@@ -125,7 +125,7 @@ fn uniform_tag_stem(buckets: &[StoredBucket], tags: &Store) -> Option<String> {
         .then_some(stem)
 }
 
-fn uniform_country(buckets: &[StoredBucket]) -> Option<String> {
+fn uniform_country(buckets: &[Bucket]) -> Option<String> {
     let mut codes = buckets
         .iter()
         .map(|bucket| bucket.country.as_deref().and_then(valid_country));
@@ -136,7 +136,7 @@ fn uniform_country(buckets: &[StoredBucket]) -> Option<String> {
     Some(first.unwrap_or_else(|| "XX".into()))
 }
 
-pub fn write_dir(dir: &Path, buckets: &[StoredBucket], tags: &Store) -> Result<usize, String> {
+pub fn write_dir(dir: &Path, buckets: &[Bucket], tags: &TagBook) -> Result<usize, String> {
     if buckets.is_empty() {
         return Err("Import proxies before exporting.".into());
     }
@@ -160,7 +160,7 @@ pub fn write_dir(dir: &Path, buckets: &[StoredBucket], tags: &Store) -> Result<u
     }
 }
 
-fn body(bucket: &StoredBucket) -> String {
+fn body(bucket: &Bucket) -> String {
     let mut text = String::new();
     for proxy in &bucket.proxies {
         text.push_str(&proxy.source);
@@ -184,13 +184,13 @@ mod tests {
     use std::path::PathBuf;
     use zip::ZipArchive;
 
-    use crate::parse::ProxyLine;
-    use crate::split::Subnet;
+    use crate::proxy::ProxyLine;
+    use crate::subnet::Subnet;
 
-    fn bucket(host: &str, n: usize) -> StoredBucket {
-        StoredBucket {
-            subnet: Subnet::from_host(host.parse().unwrap()),
-            proxies: (0..n)
+    fn bucket(host: &str, n: usize) -> Bucket {
+        Bucket::new(
+            Subnet::from_host(host.parse().unwrap()),
+            (0..n)
                 .map(|i| ProxyLine {
                     host: host.parse().unwrap(),
                     port: 8080,
@@ -199,9 +199,8 @@ mod tests {
                     source: format!("{host}:8080:user:{i}"),
                 })
                 .collect(),
-            country: Some("FR".into()),
-            last_probe: None,
-        }
+            Some("FR".into()),
+        )
     }
 
     fn tags(values: &[&str]) -> Vec<Tag> {
@@ -277,7 +276,7 @@ mod tests {
         });
         bucket.country = Some("FR".into());
         let tags_path = dir.join("tags.json");
-        let mut store = Store::load(tags_path).unwrap();
+        let mut store = TagBook::load(tags_path).unwrap();
         store.set("192.0.2.0/24".into(), tags(&["isp"])).unwrap();
         let written = write_dir(&dir.join("out"), &[bucket], &store).unwrap();
         assert_eq!(written, 1);
@@ -289,7 +288,7 @@ mod tests {
     #[test]
     fn write_dir_rejects_empty_session() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         assert!(write_dir(&dir.join("out"), &[], &store).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -297,7 +296,7 @@ mod tests {
     #[test]
     fn write_dir_writes_one_bucket_when_given_one() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let written = write_dir(
             &dir.join("out"),
             &[bucket("192.0.2.10", 1), bucket("198.51.100.2", 2)][0..1],
@@ -325,7 +324,7 @@ mod tests {
             .mode(0o644)
             .open(&path)
             .unwrap();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         write_dir(&out, &[bucket("192.0.2.10", 1)], &store).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -335,7 +334,7 @@ mod tests {
     #[test]
     fn bundle_names_uniform_tagged_scopes_after_the_shared_tag_stem() {
         let dir = temp_dir();
-        let mut store = Store::load(dir.join("tags.json")).unwrap();
+        let mut store = TagBook::load(dir.join("tags.json")).unwrap();
         store.set("192.0.2.0/24".into(), tags(&["isp"])).unwrap();
         store.set("198.51.100.0/24".into(), tags(&["isp"])).unwrap();
         let bundle = bundle(
@@ -350,7 +349,7 @@ mod tests {
     #[test]
     fn bundle_names_partially_known_countries_as_mixed() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let mut first = bucket("192.0.2.10", 1);
         first.country = Some("FR".into());
         let mut second = bucket("198.51.100.2", 1);
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     fn bundle_names_country_less_scopes_xx() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let mut first = bucket("192.0.2.10", 1);
         first.country = None;
         let mut second = bucket("198.51.100.2", 2);
@@ -376,7 +375,7 @@ mod tests {
     #[test]
     fn bundle_collects_per_subnet_entries_plus_the_combined_import_list() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let bundle = bundle(
             &[bucket("192.0.2.10", 2), bucket("198.51.100.2", 1)],
             &store,
@@ -408,7 +407,7 @@ mod tests {
     #[test]
     fn bundle_filenames_distinguish_distinct_scopes_sharing_the_same_aggregates() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let first = bundle(
             &[bucket("192.0.2.10", 3), bucket("198.51.100.2", 3)],
             &store,
@@ -428,7 +427,7 @@ mod tests {
     #[test]
     fn bundle_filenames_follow_the_scope_not_the_member_content() {
         let dir = temp_dir();
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let first = bundle(
             &[bucket("192.0.2.10", 2), bucket("198.51.100.2", 1)],
             &store,
@@ -447,7 +446,7 @@ mod tests {
     fn write_dir_writes_a_single_bundle_zip_when_several_buckets_are_selected() {
         let dir = temp_dir();
         let out = dir.join("out");
-        let store = Store::load(dir.join("tags.json")).unwrap();
+        let store = TagBook::load(dir.join("tags.json")).unwrap();
         let written = write_dir(
             &out,
             &[bucket("192.0.2.10", 1), bucket("198.51.100.2", 2)],

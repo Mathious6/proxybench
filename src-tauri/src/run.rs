@@ -1,207 +1,144 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::parse::ProxyLine;
-use crate::probe::{self, Sample};
-use crate::session::StoredBucket;
-use crate::stats::{self, milliseconds};
-use crate::target::Target;
+use crate::cancel::Cancel;
+use crate::measurement::Tally;
+use crate::probe::Sample;
+use crate::proxy::ProxyLine;
+use crate::settings::Settings;
+use crate::subnet::Subnet;
 
-pub const STARTS_PER_SECOND: usize = 5;
-pub const IN_FLIGHT: usize = 32;
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Metrics {
-    pub cidr: String,
-    pub tested: usize,
-    pub ok: usize,
-    pub connect_p50: Option<f64>,
-    pub connect_p95: Option<f64>,
-    pub ttfb_p50: Option<f64>,
-    pub ttfb_p95: Option<f64>,
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub in_flight: usize,
+    pub starts_per_second: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+impl From<&Settings> for Limits {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            in_flight: settings.in_flight,
+            starts_per_second: settings.starts_per_second,
+        }
+    }
+}
+
+pub struct Workload {
+    pub subnet: Subnet,
+    pub proxies: Vec<ProxyLine>,
+}
+
 pub struct Progress {
     pub done: usize,
     pub total: usize,
     pub eta_seconds: Option<u64>,
-    pub metrics: Metrics,
+    pub subnet: Subnet,
+    pub tally: Tally,
 }
 
-struct BucketState {
-    cidr: String,
-    tested: usize,
-    ok: usize,
-    connect: Vec<Duration>,
-    ttfb: Vec<Duration>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    Completed,
+    Stopped,
 }
 
-impl BucketState {
-    fn new(cidr: String) -> Self {
-        Self {
-            cidr,
-            tested: 0,
-            ok: 0,
-            connect: Vec::new(),
-            ttfb: Vec::new(),
-        }
-    }
-
-    fn record(&mut self, sample: Option<Sample>) -> Metrics {
-        self.tested += 1;
-        if let Some(sample) = sample {
-            self.ok += 1;
-            self.connect.push(sample.connect);
-            self.ttfb.push(sample.ttfb);
-        }
-        self.metrics()
-    }
-
-    fn metrics(&self) -> Metrics {
-        let connect = stats::percentiles(&self.connect);
-        let ttfb = stats::percentiles(&self.ttfb);
-        Metrics {
-            cidr: self.cidr.clone(),
-            tested: self.tested,
-            ok: self.ok,
-            connect_p50: connect.map(|value| milliseconds(value.p50)),
-            connect_p95: connect.map(|value| milliseconds(value.p95)),
-            ttfb_p50: ttfb.map(|value| milliseconds(value.p50)),
-            ttfb_p95: ttfb.map(|value| milliseconds(value.p95)),
-        }
-    }
-}
-
-pub async fn schedule<F, Fut, OnProgress>(
-    buckets: Vec<StoredBucket>,
-    probe: F,
-    on_progress: OnProgress,
-) -> HashMap<String, Metrics>
-where
-    F: Fn(ProxyLine) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Sample, ()>> + Send,
-    OnProgress: FnMut(Progress) + Send,
-{
-    schedule_with(buckets, probe, STARTS_PER_SECOND, IN_FLIGHT, on_progress).await
-}
-
-async fn schedule_with<F, Fut, OnProgress>(
-    buckets: Vec<StoredBucket>,
-    probe: F,
-    starts_per_second: usize,
-    in_flight: usize,
+pub async fn schedule<Job, Pending, OnProgress>(
+    workloads: Vec<Workload>,
+    limits: Limits,
+    cancel: Cancel,
+    job: Job,
     mut on_progress: OnProgress,
-) -> HashMap<String, Metrics>
+) -> Ending
 where
-    F: Fn(ProxyLine) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Sample, ()>> + Send,
+    Job: Fn(ProxyLine) -> Pending + Send + Sync + 'static,
+    Pending: Future<Output = Option<Sample>> + Send,
     OnProgress: FnMut(Progress) + Send,
 {
-    let total: usize = buckets.iter().map(|bucket| bucket.proxies.len()).sum();
+    let work = round_robin(workloads);
+    let total = work.len();
+    let mut tallies: HashMap<Subnet, Tally> = work
+        .iter()
+        .map(|(subnet, _)| (*subnet, Tally::new()))
+        .collect();
     if total == 0 {
-        return HashMap::new();
+        return Ending::Completed;
     }
-    let work = round_robin(buckets);
-    let mut states = initial_states(&work);
-    let jobs = work.len();
     let started = Instant::now();
-    let limiter = Arc::new(RateLimit::new(starts_per_second));
-    let inflight = Arc::new(Semaphore::new(in_flight));
-    let probe = Arc::new(probe);
-    let (tx, mut rx) = tokio::sync::mpsc::channel(jobs.max(1));
-    let dispatcher = tokio::spawn(async move {
-        for (cidr, proxy) in work {
-            let permit = inflight.clone().acquire_owned().await.expect("semaphore");
-            limiter.acquire().await;
-            let probe = probe.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let sample = probe(proxy).await;
-                drop(permit);
-                let _ = tx.send((cidr, sample)).await;
-            });
+    let rate = Arc::new(RateLimit::new(limits.starts_per_second));
+    let in_flight = Arc::new(Semaphore::new(limits.in_flight));
+    let job = Arc::new(job);
+    let (sender, mut results) = tokio::sync::mpsc::channel(total);
+    let dispatcher = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            for (subnet, proxy) in work {
+                let permit = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    permit = in_flight.clone().acquire_owned() => permit.expect("semaphore stays open"),
+                };
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = rate.acquire() => {}
+                }
+                let job = job.clone();
+                let sender = sender.clone();
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    let sample = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        sample = job(proxy) => sample,
+                    };
+                    drop(permit);
+                    let _ = sender.send((subnet, sample)).await;
+                });
+            }
         }
     });
     let mut done = 0;
-    while let Some((cidr, sample)) = rx.recv().await {
+    while let Some((subnet, sample)) = results.recv().await {
         done += 1;
-        let metrics = states
-            .get_mut(&cidr)
-            .expect("scheduled cidr")
-            .record(sample.ok());
-        let elapsed = started.elapsed();
+        let tally = tallies.get_mut(&subnet).expect("scheduled subnet");
+        tally.record(sample);
         on_progress(Progress {
             done,
             total,
-            eta_seconds: eta(elapsed, done, total),
-            metrics,
+            eta_seconds: eta(started.elapsed(), done, total),
+            subnet,
+            tally: tally.clone(),
         });
     }
     let _ = dispatcher.await;
-    states
-        .into_iter()
-        .map(|(cidr, state)| (cidr, state.metrics()))
-        .collect()
+    if done < total {
+        Ending::Stopped
+    } else {
+        Ending::Completed
+    }
 }
 
-pub async fn probe_session<OnProgress>(
-    buckets: Vec<StoredBucket>,
-    target: Target,
-    on_progress: OnProgress,
-) -> HashMap<String, Metrics>
-where
-    OnProgress: FnMut(Progress) + Send,
-{
-    let tls = probe::connector();
-    schedule(
-        buckets,
-        move |proxy| {
-            let target = target.clone();
-            let tls = tls.clone();
-            async move { probe::measure(&proxy, &target, &tls).await }
-        },
-        on_progress,
-    )
-    .await
-}
-
-fn round_robin(buckets: Vec<StoredBucket>) -> Vec<(String, ProxyLine)> {
-    let mut queues: Vec<(String, std::collections::VecDeque<ProxyLine>)> = buckets
+fn round_robin(workloads: Vec<Workload>) -> Vec<(Subnet, ProxyLine)> {
+    let mut queues: Vec<(Subnet, VecDeque<ProxyLine>)> = workloads
         .into_iter()
-        .map(|bucket| (bucket.subnet.cidr(), bucket.proxies.into_iter().collect()))
+        .map(|workload| (workload.subnet, workload.proxies.into()))
         .collect();
     let mut work = Vec::new();
     loop {
-        let mut progressed = false;
-        for (cidr, queue) in &mut queues {
+        let before = work.len();
+        for (subnet, queue) in &mut queues {
             if let Some(proxy) = queue.pop_front() {
-                work.push((cidr.clone(), proxy));
-                progressed = true;
+                work.push((*subnet, proxy));
             }
         }
-        if !progressed {
-            break;
+        if work.len() == before {
+            return work;
         }
     }
-    work
-}
-
-fn initial_states(work: &[(String, ProxyLine)]) -> HashMap<String, BucketState> {
-    let mut states = HashMap::new();
-    for (cidr, _) in work {
-        states
-            .entry(cidr.clone())
-            .or_insert_with(|| BucketState::new(cidr.clone()));
-    }
-    states
 }
 
 fn eta(elapsed: Duration, done: usize, total: usize) -> Option<u64> {
@@ -243,8 +180,6 @@ impl RateLimit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ProxyLine;
-    use crate::split::Subnet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
@@ -258,13 +193,19 @@ mod tests {
         }
     }
 
-    fn bucket(host: &str, proxies: Vec<ProxyLine>) -> StoredBucket {
-        StoredBucket {
-            subnet: Subnet::from_host(host.parse().unwrap()),
+    fn subnet(host: &str) -> Subnet {
+        Subnet::from_host(host.parse().unwrap())
+    }
+
+    fn workload(host: &str, proxies: Vec<ProxyLine>) -> Workload {
+        Workload {
+            subnet: subnet(host),
             proxies,
-            country: None,
-            last_probe: None,
         }
+    }
+
+    fn label(proxy: &ProxyLine) -> &str {
+        proxy.source.rsplit(':').next().unwrap()
     }
 
     fn ok_sample() -> Sample {
@@ -274,19 +215,35 @@ mod tests {
         }
     }
 
+    type Tested = Arc<StdMutex<HashMap<Subnet, usize>>>;
+
+    fn record_tested(tested: &Tested) -> impl FnMut(Progress) + Send {
+        let writer = tested.clone();
+        move |progress: Progress| {
+            writer
+                .lock()
+                .unwrap()
+                .insert(progress.subnet, progress.tally.probe(0).tested);
+        }
+    }
+
+    fn limits(in_flight: usize) -> Limits {
+        Limits {
+            in_flight,
+            starts_per_second: 1000,
+        }
+    }
+
     #[test]
     fn round_robin_interleaves_subnets() {
         let work = round_robin(vec![
-            bucket(
+            workload(
                 "192.0.2.1",
                 vec![proxy("192.0.2.1", "a1"), proxy("192.0.2.2", "a2")],
             ),
-            bucket("198.51.100.1", vec![proxy("198.51.100.1", "b1")]),
+            workload("198.51.100.1", vec![proxy("198.51.100.1", "b1")]),
         ]);
-        let labels: Vec<_> = work
-            .iter()
-            .map(|(_, proxy)| proxy.source.rsplit(':').next().unwrap())
-            .collect();
+        let labels: Vec<_> = work.iter().map(|(_, proxy)| label(proxy)).collect();
         assert_eq!(labels, vec!["a1", "b1", "a2"]);
     }
 
@@ -294,26 +251,23 @@ mod tests {
     async fn schedule_starts_in_round_robin_order() {
         let started = Arc::new(StdMutex::new(Vec::new()));
         let observed = started.clone();
-        schedule_with(
+        schedule(
             vec![
-                bucket(
+                workload(
                     "192.0.2.1",
                     vec![proxy("192.0.2.1", "a1"), proxy("192.0.2.2", "a2")],
                 ),
-                bucket("198.51.100.1", vec![proxy("198.51.100.1", "b1")]),
+                workload("198.51.100.1", vec![proxy("198.51.100.1", "b1")]),
             ],
+            limits(1),
+            Cancel::new(),
             move |proxy| {
                 let started = observed.clone();
                 async move {
-                    started
-                        .lock()
-                        .unwrap()
-                        .push(proxy.source.rsplit(':').next().unwrap().to_string());
-                    Ok(ok_sample())
+                    started.lock().unwrap().push(label(&proxy).to_string());
+                    Some(ok_sample())
                 }
             },
-            1000,
-            1,
             |_| {},
         )
         .await;
@@ -321,75 +275,138 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schedule_drops_failures_and_reports_ok_count() {
-        let a = "192.0.2.0/24".to_string();
-        let buckets = vec![bucket(
-            "192.0.2.1",
-            vec![
-                proxy("192.0.2.1", "ok"),
-                proxy("192.0.2.2", "fail"),
-                proxy("192.0.2.3", "ok"),
-            ],
-        )];
-        let patches = Arc::new(StdMutex::new(Vec::new()));
-        let observed = patches.clone();
-        let result = schedule(
-            buckets,
+    async fn schedule_drops_failures_and_reports_progress_per_sample() {
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let observed = events.clone();
+        let ending = schedule(
+            vec![workload(
+                "192.0.2.1",
+                vec![
+                    proxy("192.0.2.1", "ok"),
+                    proxy("192.0.2.2", "fail"),
+                    proxy("192.0.2.3", "ok"),
+                ],
+            )],
+            limits(8),
+            Cancel::new(),
             |proxy| async move {
-                if proxy.source.ends_with(":fail") {
-                    Err(())
+                if label(&proxy) == "fail" {
+                    None
                 } else {
-                    Ok(ok_sample())
+                    Some(ok_sample())
                 }
             },
-            move |progress| {
-                observed.lock().unwrap().push(progress);
-            },
+            move |progress| observed.lock().unwrap().push(progress),
         )
         .await;
-        let metrics = result.get(&a).unwrap();
-        assert_eq!(metrics.tested, 3);
-        assert_eq!(metrics.ok, 2);
-        assert_eq!(metrics.connect_p50, Some(10.0));
-        let events = patches.lock().unwrap();
+        assert_eq!(ending, Ending::Completed);
+        let events = events.lock().unwrap();
         assert_eq!(events.len(), 3);
-        assert_eq!(events.last().unwrap().done, 3);
-        assert_eq!(events.last().unwrap().total, 3);
-        assert_eq!(events.last().unwrap().metrics.ok, 2);
+        let last = events.last().unwrap();
+        assert_eq!((last.done, last.total), (3, 3));
+        let probe = last.tally.probe(0);
+        assert_eq!((probe.ok, probe.tested), (2, 3));
+        assert_eq!(probe.connect_p50, Some(10.0));
     }
 
     #[tokio::test]
     async fn schedule_never_exceeds_in_flight_cap() {
         let current = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
-        let buckets = vec![bucket(
-            "192.0.2.1",
-            (1..=8)
-                .map(|n| proxy("192.0.2.1", &n.to_string()))
-                .collect(),
-        )];
-        let current_probe = current.clone();
-        let peak_probe = peak.clone();
-        schedule_with(
-            buckets,
+        let proxies = (1..=8)
+            .map(|n| proxy("192.0.2.1", &n.to_string()))
+            .collect();
+        let current_job = current.clone();
+        let peak_job = peak.clone();
+        schedule(
+            vec![workload("192.0.2.1", proxies)],
+            limits(3),
+            Cancel::new(),
             move |_proxy| {
-                let current = current_probe.clone();
-                let peak = peak_probe.clone();
+                let current = current_job.clone();
+                let peak = peak_job.clone();
                 async move {
                     let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(now, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(40)).await;
                     current.fetch_sub(1, Ordering::SeqCst);
-                    Ok(ok_sample())
+                    Some(ok_sample())
                 }
             },
-            1000,
-            3,
             |_| {},
         )
         .await;
-        assert!(peak.load(Ordering::SeqCst) <= 3);
         assert_eq!(peak.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_promptly_with_completed_samples_only() {
+        let cancel = Cancel::new();
+        let trigger = cancel.clone();
+        let started = Instant::now();
+        let tested: Tested = Arc::default();
+        let mut record = record_tested(&tested);
+        let ending = schedule(
+            vec![
+                workload(
+                    "192.0.2.1",
+                    vec![proxy("192.0.2.1", "fast"), proxy("192.0.2.2", "slow")],
+                ),
+                workload("198.51.100.1", vec![proxy("198.51.100.1", "slow")]),
+            ],
+            limits(8),
+            cancel,
+            |proxy| async move {
+                if label(&proxy) == "slow" {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+                Some(ok_sample())
+            },
+            move |progress| {
+                record(progress);
+                trigger.cancel();
+            },
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(ending, Ending::Stopped);
+        let tested = tested.lock().unwrap();
+        assert_eq!(tested.get(&subnet("192.0.2.1")), Some(&1));
+        assert_eq!(tested.get(&subnet("198.51.100.1")), None);
+    }
+
+    #[tokio::test]
+    async fn cancel_before_start_runs_nothing() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counted = ran.clone();
+        let ending = schedule(
+            vec![workload("192.0.2.1", vec![proxy("192.0.2.1", "a")])],
+            limits(8),
+            cancel,
+            move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async { Some(ok_sample()) }
+            },
+            |_| {},
+        )
+        .await;
+        assert_eq!(ending, Ending::Stopped);
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_workload_completes_immediately() {
+        let ending = schedule(
+            Vec::new(),
+            limits(8),
+            Cancel::new(),
+            |_| async { Some(ok_sample()) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(ending, Ending::Completed);
     }
 
     #[test]
